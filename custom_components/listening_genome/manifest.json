@@ -1,0 +1,17 @@
+{
+  "domain": "listening_genome",
+  "name": "Listening Genome",
+  "codeowners": [
+    "@BalthazarDroid"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/BalthazarDroid/listening-genome",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/BalthazarDroid/listening-genome/issues",
+  "requirements": [
+    "aiosqlite>=0.20.0",
+    "music-assistant-client>=1.2.0"
+  ],
+  "version": "0.1.0"
+}

@@ -1,0 +1,269 @@
+"""
+MusicBrainz artist enrichment (§1.9, §3.8, D-08).
+
+Resolves an artist name to a MusicBrainz ID, tags, life-span begin year and country. Prefers the
+already-loaded ``musicbrainz`` provider (throttled, MA's own mirror, 30-day HTTP cache) and falls
+back to the injected :class:`~music_assistant.controllers.genome.http.HttpClient` — the seam tests
+use, since MusicBrainz is unreachable from this workspace (BRIEF.md).
+
+Contract gap (see ``docs/STATUS.md`` "Contract gaps"): ``providers/musicbrainz/provider.py``
+exposes no plain "search by artist name" method — its ``search()`` needs a track/album context,
+and ``get_artist_details()`` needs an MBID already in hand. D-08 says to reuse the provider rather
+than write a second, unthrottled client, so this module reaches for the provider's own
+``_api_client.get_data(...)`` (the same throttled, cached MusicBrainz HTTP client the provider
+itself calls) when the provider is loaded, and the plain ``HttpClient`` otherwise.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from ..compat import DEFAULT_GENRE_MAPPING, create_safe_string
+from ..core.constants import (
+    LOGGER,
+    RESOLVE_STATE_ERROR,
+    RESOLVE_STATE_NOT_FOUND,
+    RESOLVE_STATE_OK,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from ..core.http import HttpClient
+    from ..core.protocols import GenomeStoreProtocol
+
+# MA's own MusicBrainz mirror (see providers/musicbrainz/api_client.py::MB_BASE_URL, which this
+# duplicates rather than imports: importing that module pulls in the whole webserver stack for a
+# single URL string, and it is not part of the frozen contract this package may edit).
+_MB_BASE_URL = "https://musicbrainz-mirror.music-assistant.io/ws/2"
+
+# from providers/musicbrainz/constants.py::LUCENE_SPECIAL, duplicated for the same reason.
+_LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
+
+_MIN_MATCH_SCORE = 85
+_MAX_GENRES_PER_ARTIST = 3
+
+
+@dataclass(slots=True, frozen=True)
+class ArtistMetaUpdate:
+    """The MusicBrainz-derived fields for one artist, ready to hand to ``GenomeStore``."""
+
+    mbid: str | None
+    mb_tags: tuple[tuple[str, int], ...]
+    genres: tuple[str, ...]
+    begin_year: int | None
+    country: str | None
+
+
+def _normalize_for_match(value: str) -> str:
+    """Fold a genre/tag name for alias matching: lowercase, ``&``/``_``/``-`` normalized."""
+    value = value.lower().strip().replace("&", "and")
+    value = re.sub(r"[-_]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _build_alias_lookup() -> dict[str, str]:
+    """Build the normalized-alias -> ``translation_key`` lookup from ``genre_mapping.json``."""
+    lookup: dict[str, str] = {}
+    for entry in DEFAULT_GENRE_MAPPING:
+        translation_key = entry["translation_key"]
+        for alias in (*entry.get("aliases", ()), entry["genre"]):
+            lookup.setdefault(_normalize_for_match(alias), translation_key)
+    return lookup
+
+
+_ALIAS_LOOKUP = _build_alias_lookup()
+
+
+async def resolve_artist(
+    name: str,
+    *,
+    client: HttpClient,
+) -> ArtistMetaUpdate | None:
+    """
+    Resolve an artist name to MusicBrainz metadata, or ``None`` if no confident match exists.
+
+    A transport failure or an unexpected response shape propagates as an exception rather than
+    being swallowed here, so :func:`enrich_pending_artists` can tell "not found" (``None``, cheap
+    30-day recheck) apart from "MusicBrainz did not answer" (exception, ``resolve_state="error"``,
+    no cooldown — see §3.8). Callers that do not go through :func:`enrich_pending_artists` must
+    apply the same distinction themselves; a rebuild must never fail outright because MusicBrainz
+    is briefly unreachable.
+
+    :param name: The artist name as reported by a listen.
+    :param client: The :class:`HttpClient` fallback, used when no ``musicbrainz`` provider is
+        loaded.
+    """
+    mbid = await _search_artist(name, client=client)
+    if mbid is None:
+        return None
+    return await _lookup_artist(mbid, client=client)
+
+
+async def enrich_pending_artists(
+    store: GenomeStoreProtocol,
+    *,
+    client: HttpClient,
+    limit: int = 200,
+    min_interval_seconds: float = 0.0,
+) -> int:
+    """
+    Resolve and store MusicBrainz metadata for pending artists, one at a time.
+
+    Every artist :meth:`GenomeStore.pending_artist_keys` returns is resolved independently,
+    never letting a single failure abort the batch.
+
+    :param store: The ``GenomeStore``-shaped object to read pending artists from and write
+        results into.
+    :param client: The :class:`HttpClient` fallback for artists without a loaded provider.
+    :param limit: The maximum number of artists to resolve in this pass.
+    :param min_interval_seconds: Minimum wall-clock spacing between artists' MusicBrainz lookups
+        (§3.8, P3). ``0`` (the default) issues lookups back-to-back, relying entirely on the
+        shared client's own throttling - appropriate for a short, interactive rebuild pass.
+        A continuous background pass over a large backlog should pace itself here instead,
+        comfortably under MusicBrainz's ~1 req/sec courtesy limit, rather than relying on its
+        429/``Retry-After`` path (observed: a 63s penalty after a 200-artist burst).
+    :return: The number of artists successfully resolved (``resolve_state="ok"``).
+    """
+    pending = await store.pending_artist_keys(limit=limit)
+    if not pending:
+        return 0
+    LOGGER.info("MusicBrainz enrichment pass starting: %d pending artists", len(pending))
+    resolved = 0
+    failures: list[str] = []
+    last_call = 0.0
+    for artist_key, artist_name in pending:
+        if min_interval_seconds > 0:
+            wait = min_interval_seconds - (time.monotonic() - last_call)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            last_call = time.monotonic()
+        try:
+            update = await resolve_artist(artist_name, client=client)
+        except Exception as err:
+            LOGGER.debug("MusicBrainz lookup failed for %r: %s", artist_name, err)
+            failures.append(artist_name)
+            await store.upsert_artist_meta_full(
+                [{"artist_key": artist_key, "artist_name": artist_name}], state=RESOLVE_STATE_ERROR
+            )
+            continue
+        if update is None:
+            await store.upsert_artist_meta_full(
+                [{"artist_key": artist_key, "artist_name": artist_name}],
+                state=RESOLVE_STATE_NOT_FOUND,
+            )
+            continue
+        await store.upsert_artist_meta_full(
+            [
+                {
+                    "artist_key": artist_key,
+                    "artist_name": artist_name,
+                    "mbid": update.mbid,
+                    "mb_tags": [{"name": name, "count": count} for name, count in update.mb_tags],
+                    "genres": list(update.genres),
+                    "begin_year": update.begin_year,
+                    "country": update.country,
+                }
+            ],
+            state=RESOLVE_STATE_OK,
+        )
+        resolved += 1
+    if failures:
+        # Named, at INFO, because a handful of artists that fail every pass is the difference
+        # between "still working" and "stuck", and nobody reads debug logs on a live box.
+        LOGGER.info(
+            "MusicBrainz lookup raised for %d artist(s) this pass: %s",
+            len(failures),
+            ", ".join(repr(name) for name in failures[:8]),
+        )
+    LOGGER.info(
+        "MusicBrainz enrichment pass finished: %d/%d artists resolved", resolved, len(pending)
+    )
+    return resolved
+
+
+async def _search_artist(name: str, *, client: HttpClient) -> str | None:
+    """Search by artist name and return the best matching MBID, or ``None``."""
+    escaped = re.sub(_LUCENE_SPECIAL, r"\\\1", name)
+    query = f'artist:"{escaped}"'
+    data = await _get("artist", {"query": query, "limit": "5"}, client=client)
+    candidates = data.get("artists", []) if isinstance(data, dict) else []
+    safe_name = create_safe_string(name)
+    for candidate in candidates:
+        score = candidate.get("score", 0) or 0
+        if score >= _MIN_MATCH_SCORE and create_safe_string(candidate.get("name", "")) == safe_name:
+            mbid: str = candidate["id"]
+            return mbid
+    return None
+
+
+async def _lookup_artist(mbid: str, *, client: HttpClient) -> ArtistMetaUpdate:
+    """Fetch full artist details for a known MBID and build an :class:`ArtistMetaUpdate`."""
+    data = await _get(f"artist/{mbid}", {"inc": "tags+genres"}, client=client)
+    tags = sorted((data.get("tags") or []), key=lambda tag: tag.get("count", 0), reverse=True)
+    mb_tags = tuple((tag["name"], int(tag.get("count", 0))) for tag in tags if tag.get("name"))
+    genres = _map_tags_to_genres(name for name, _count in mb_tags)
+    life_span = data.get("life-span") or {}
+    return ArtistMetaUpdate(
+        mbid=mbid,
+        mb_tags=mb_tags,
+        genres=genres,
+        begin_year=_parse_year(life_span.get("begin")),
+        country=data.get("country"),
+    )
+
+
+async def _get(endpoint: str, params: dict[str, str], *, client: HttpClient) -> Any:
+    """
+    Issue one MusicBrainz GET.
+
+    The fork preferred Music Assistant's own loaded ``musicbrainz`` provider when there was one,
+    which routed through MA's mirror. That path leaves with the process, and it is no loss: the
+    mirror gates on a Music Assistant User-Agent, and the fork had already decided not to spoof
+    one. Everything goes to musicbrainz.org directly, throttled by the injected client.
+    """
+    url = f"{_MB_BASE_URL}/{endpoint}"
+    return await client.get_json(url, params={**params, "fmt": "json"})
+
+
+def _map_tags_to_genres(tag_names: Any) -> tuple[str, ...]:
+    """Map tag names (most-confident first) to up to 3 distinct ``genre_mapping.json`` keys."""
+    genres: list[str] = []
+    for tag_name in tag_names:
+        translation_key = _ALIAS_LOOKUP.get(_normalize_for_match(tag_name))
+        if translation_key and translation_key not in genres:
+            genres.append(translation_key)
+        if len(genres) >= _MAX_GENRES_PER_ARTIST:
+            break
+    return tuple(genres)
+
+
+def map_genre_names(names: Iterable[str]) -> tuple[str, ...]:
+    """
+    Map free-form genre/tag names to ``genre_mapping.json`` translation keys (D-07).
+
+    The public entry point onto the same alias table the MusicBrainz tag mapping uses, so a
+    genre string that arrives from somewhere else entirely (an MA library artist's own
+    metadata, for the discovery feature) lands in exactly the same 59-key vocabulary the
+    divergence maths is expressed in.
+
+    :param names: Genre/tag names, most confident first.
+    """
+    return _map_tags_to_genres(names)
+
+
+def _parse_year(value: Any) -> int | None:
+    """Parse a MusicBrainz ``life-span.begin`` value (``"1994"`` or ``"1994-03-01"``) to a year."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return int(value[:4])
+    except ValueError:
+        return None
+
+
+__all__ = ["ArtistMetaUpdate", "enrich_pending_artists", "map_genre_names", "resolve_artist"]

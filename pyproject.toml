@@ -1,0 +1,26 @@
+[project]
+name = "listening-genome"
+version = "0.1.0"
+description = "A listening-taste profile for Home Assistant, built from Music Assistant history"
+requires-python = ">=3.14"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+# Matches the source repo. A transplant that reflows every copied line is not a transplant.
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+# PTH is deliberately absent. Most of this package is a verbatim transplant from the Music
+# Assistant fork, and rewriting os.path calls into pathlib across copied code to satisfy a rule
+# the source repo never enforced would mean editing logic that the transplanted tests are
+# vouching for, in exchange for nothing.
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ASYNC"]
+# E501 is ignored for the same reason the source repo ignores it: the formatter owns wrapping.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
