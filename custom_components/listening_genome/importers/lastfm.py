@@ -2,7 +2,7 @@
 Last.fm ``user.getRecentTracks`` importer (§3.8).
 
 Paginates a public Last.fm profile's recent-tracks history through the injected
-:class:`~music_assistant.controllers.genome.http.HttpClient`, resuming from the last imported
+:class:`~listening_genome.core.http.HttpClient`, resuming from the last imported
 timestamp so a scheduled poll only fetches what is new.
 """
 
@@ -140,7 +140,7 @@ class LastfmImporter:
         Import Last.fm history, in one of two explicit modes (§3.8, P1).
 
         **Backfill mode** - the one-time full-history sweep
-        (:meth:`~music_assistant.controllers.genome.store.GenomeStore.lastfm_backfill_done`)
+        (:meth:`~listening_genome.core.store.GenomeStore.lastfm_backfill_done`)
         has never completed: pages from page 1 through the last page with **no** ``from_ts`` at
         all, so an interrupted first sweep can always be resumed by simply running the import
         again - the store's existing ``dedupe_key`` uniqueness absorbs whatever a prior partial

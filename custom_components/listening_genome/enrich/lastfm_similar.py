@@ -3,12 +3,12 @@ Last.fm ``artist.getSimilar`` enrichment for the discovery feature (§3.8, D-16)
 
 Network-only module: it exists to be driven by the background discovery pass
 (:meth:`GenomeController._background_discovery`), never by a read path. Every request goes
-through the injected :class:`~music_assistant.controllers.genome.http.HttpClient`, so tests
+through the injected :class:`~listening_genome.core.http.HttpClient`, so tests
 answer it from fixtures and never touch the network.
 
 The API key is sent as a query parameter, so no failure path here may stringify an exception
 that could carry the request URL — every message is built by
-:func:`~music_assistant.controllers.genome.importers.lastfm.describe_fetch_error`, which reads
+:func:`~listening_genome.importers.lastfm.describe_fetch_error`, which reads
 only the HTTP status, and by Last.fm's own JSON error body.
 """
 
@@ -47,7 +47,7 @@ async def fetch_similar_artists(
     """
     Fetch the artists Last.fm considers similar to ``artist_name``.
 
-    Raises :class:`~music_assistant.controllers.genome.errors.LastfmApiError` when Last.fm
+    Raises :class:`~listening_genome.core.errors.LastfmApiError` when Last.fm
     rejects or fails the request, so the caller can record the seed as failed and apply its
     cooldown. A well-formed response that simply lists no similar artists is not an error and
     comes back as an empty tuple.

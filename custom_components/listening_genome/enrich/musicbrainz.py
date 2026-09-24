@@ -3,7 +3,7 @@ MusicBrainz artist enrichment (§1.9, §3.8, D-08).
 
 Resolves an artist name to a MusicBrainz ID, tags, life-span begin year and country. Prefers the
 already-loaded ``musicbrainz`` provider (throttled, MA's own mirror, 30-day HTTP cache) and falls
-back to the injected :class:`~music_assistant.controllers.genome.http.HttpClient` — the seam tests
+back to the injected :class:`~listening_genome.core.http.HttpClient` — the seam tests
 use, since MusicBrainz is unreachable from this workspace (BRIEF.md).
 
 Contract gap (see ``docs/STATUS.md`` "Contract gaps"): ``providers/musicbrainz/provider.py``
