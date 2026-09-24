@@ -5,10 +5,10 @@
     "@BalthazarDroid"
   ],
   "config_flow": true,
-  "documentation": "https://github.com/BalthazarDroid/listening-genome",
+  "documentation": "https://github.com/BalthazarDroid/listening_genome",
   "integration_type": "service",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/BalthazarDroid/listening-genome/issues",
+  "issue_tracker": "https://github.com/BalthazarDroid/listening_genome/issues",
   "requirements": [
     "aiosqlite>=0.20.0",
     "music-assistant-client>=1.2.0"
