@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import types
 from typing import TYPE_CHECKING
 
+from conftest import FIXTURES_DIR
+from listening_genome.core.store import GenomeStore
 from listening_genome.importers.apple_csv import (
     ApplePlayActivityStats,
     _build_field_map,
     import_play_activity,
     parse_play_activity,
 )
-from music_assistant.controllers.genome.store import GenomeStore
-from tests.controllers.genome.conftest import FIXTURES_DIR
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -22,8 +21,7 @@ FIXTURE_CSV = str(FIXTURES_DIR / "apple_play_activity.csv")
 
 
 async def _new_store(tmp_path: Path) -> GenomeStore:
-    mass = types.SimpleNamespace(storage_path=str(tmp_path), players=None)
-    store = GenomeStore(mass)
+    store = GenomeStore(str(tmp_path))
     await store.setup()
     return store
 

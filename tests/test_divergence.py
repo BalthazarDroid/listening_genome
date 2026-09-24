@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 
 from listening_genome.baseline.loader import load_baseline
-from music_assistant.controllers.genome import engine
+from listening_genome.core import engine
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "genome" / "baseline_test.json"
 

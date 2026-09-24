@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import types
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from listening_genome.core.errors import LastfmApiError
+from listening_genome.core.store import GenomeStore
 from listening_genome.importers.lastfm import LastfmImporter
-from music_assistant.controllers.genome.store import GenomeStore
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from tests.controllers.genome.conftest import FixtureHttpClient
+    from conftest import FixtureHttpClient
 
 
 def _lastfm_payload(*, page: int, total_pages: int, n_tracks: int, start_uts: int) -> Any:
@@ -119,8 +118,7 @@ class _JsonHttpClient:
 
 
 async def _new_store(tmp_path: Path) -> GenomeStore:
-    mass = types.SimpleNamespace(storage_path=str(tmp_path), players=None)
-    store = GenomeStore(mass)
+    store = GenomeStore(str(tmp_path))
     await store.setup()
     return store
 

@@ -13,17 +13,47 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import pytest
+
 _HACS_ROOT = Path(__file__).resolve().parent.parent
-_INTEGRATION_DIR = _HACS_ROOT / "custom_components" / "listening_genome"
 _PACKAGE_PARENT = _HACS_ROOT / "custom_components"
-_SERVER_REPO = _HACS_ROOT.parent / "server"
 
-for path in (_PACKAGE_PARENT, _INTEGRATION_DIR, _SERVER_REPO):
-    str_path = str(path)
-    if path.exists() and str_path not in sys.path:
-        sys.path.insert(0, str_path)
+# Only the package's parent goes on the path, so every import has to say `listening_genome.`.
+#
+# The Music Assistant fork used to be added here too, for every test. That let five test
+# modules import the FORK's engine, store and fixtures instead of this repo's copies, and pass
+# while testing the wrong code - invisible for as long as the fork was importable. The two
+# differential tests that genuinely need MA add it themselves, through `ma_source()` below.
+if str(_PACKAGE_PARENT) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_PARENT))
 
-import pytest  # noqa: E402
+MA_SERVER_REPO = _HACS_ROOT.parent / "server"
+
+
+def ma_source() -> None:
+    """
+    Make the Music Assistant fork importable for a differential test, or skip that test.
+
+    Called at the top of the only two modules that compare against MA's real implementations.
+    Skipping rather than failing is deliberate: those tests need the fork checked out beside
+    this repo and MA's own dependencies installed, which a plain integration checkout lacks.
+    """
+    if not MA_SERVER_REPO.exists():
+        pytest.skip(
+            f"differential test needs the MA fork at {MA_SERVER_REPO}", allow_module_level=True
+        )
+    if str(MA_SERVER_REPO) not in sys.path:
+        sys.path.append(str(MA_SERVER_REPO))
+    # The folder being there is not enough: MA also needs its own dependencies installed.
+    try:
+        import music_assistant.helpers.database
+        import music_assistant.helpers.util  # noqa: F401
+    except ImportError as err:
+        pytest.skip(
+            f"differential test needs Music Assistant importable: {err}", allow_module_level=True
+        )
+
+
 from listening_genome.compat import json_loads  # noqa: E402
 
 if TYPE_CHECKING:

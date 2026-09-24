@@ -10,28 +10,26 @@ musicbrainz.org through the injected, throttled client.
 
 from __future__ import annotations
 
-import types
 from typing import TYPE_CHECKING
 
+from listening_genome.core.store import GenomeStore
 from listening_genome.enrich.listenbrainz import artist_popularity
 from listening_genome.enrich.musicbrainz import (
     enrich_pending_artists,
     resolve_artist,
 )
-from music_assistant.controllers.genome.store import GenomeStore
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from tests.controllers.genome.conftest import FixtureHttpClient
+    from conftest import FixtureHttpClient
 
 _SIGUR_ROS_MBID = "f6f2326f-6b25-4170-b89d-e235b25508e8"
 _KASABIAN_MBID = "c3ae7ee4-8b02-4c33-8ae9-3d15fcb9d4d0"
 
 
 async def _new_store(tmp_path: Path) -> GenomeStore:
-    mass = types.SimpleNamespace(storage_path=str(tmp_path), players=None)
-    store = GenomeStore(mass)
+    store = GenomeStore(str(tmp_path))
     await store.setup()
     return store
 

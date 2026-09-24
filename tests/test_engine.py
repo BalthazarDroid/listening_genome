@@ -9,6 +9,7 @@ fixture (§1.11).
 from __future__ import annotations
 
 import pytest
+from listening_genome.core import engine
 from listening_genome.core.models import (
     ArtistMeta,
     Baseline,
@@ -16,7 +17,6 @@ from listening_genome.core.models import (
     GenomeInputs,
     Listen,
 )
-from music_assistant.controllers.genome import engine
 
 NOW = 1_757_000_000
 DAY = 86400

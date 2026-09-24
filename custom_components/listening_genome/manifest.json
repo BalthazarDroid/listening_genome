@@ -10,7 +10,11 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/BalthazarDroid/listening_genome/issues",
   "requirements": [
+    "aiofiles>=23.2.1",
     "aiosqlite>=0.20.0",
+    "anyascii>=0.3.2",
+    "chardet>=5.2.0",
+    "mashumaro>=3.13",
     "music-assistant-client>=1.2.0"
   ],
   "version": "0.1.0"

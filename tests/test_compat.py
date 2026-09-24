@@ -11,10 +11,14 @@ relaxing the assertion.
 
 import itertools
 
-import compat
-import music_assistant_models.helpers as real_helpers
-from music_assistant import constants as real_constants
-from music_assistant.helpers import util as real_util
+from conftest import ma_source
+from listening_genome import compat
+
+ma_source()
+
+import music_assistant_models.helpers as real_helpers  # noqa: E402
+from music_assistant import constants as real_constants  # noqa: E402
+from music_assistant.helpers import util as real_util  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # create_safe_string

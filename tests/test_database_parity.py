@@ -14,10 +14,14 @@ import sqlite3
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from conftest import ma_source
 from listening_genome.core.database import UNSET as GENOME_UNSET
 from listening_genome.core.database import GenomeDatabase
-from music_assistant.helpers.database import UNSET as MA_UNSET
-from music_assistant.helpers.database import DatabaseConnection
+
+ma_source()
+
+from music_assistant.helpers.database import UNSET as MA_UNSET  # noqa: E402
+from music_assistant.helpers.database import DatabaseConnection  # noqa: E402
 
 if TYPE_CHECKING:
     from pathlib import Path
