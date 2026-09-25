@@ -7,6 +7,8 @@ from typing import Final
 
 from homeassistant.const import Platform
 
+from .core.constants import GENOME_ENRICHMENT_INTERVAL_SECONDS
+
 DOMAIN: Final = "listening_genome"
 
 # the Music Assistant integration whose entry this one is linked to
@@ -21,9 +23,17 @@ STORAGE_DIRNAME: Final = "listening_genome"
 
 DEVICE_NAME: Final = "Listening Genome"
 
-# how often the coordinator re-reads the genome (from cache; a rebuild only when none exists)
-UPDATE_INTERVAL: Final = timedelta(hours=1)
+# The coordinator no longer polls: it holds the genome, read once at setup and replaced by every
+# rebuild (daily at the configured local hour, the button, or the websocket command).
 
-PLATFORMS: Final[list[Platform]] = [Platform.SENSOR]
+# how often the background enrichment pass runs (the fork's hourly scheduled task)
+ENRICHMENT_INTERVAL: Final = timedelta(seconds=GENOME_ENRICHMENT_INTERVAL_SECONDS)
+
+PLATFORMS: Final[list[Platform]] = [Platform.BUTTON, Platform.SENSOR]
 
 WS_TYPE_GET: Final = f"{DOMAIN}/get"
+WS_TYPE_REBUILD: Final = f"{DOMAIN}/rebuild"
+WS_TYPE_JOBS: Final = f"{DOMAIN}/jobs"
+WS_TYPE_UNRESOLVED_ARTISTS: Final = f"{DOMAIN}/unresolved_artists"
+WS_TYPE_RETRY_ARTISTS: Final = f"{DOMAIN}/retry_artists"
+WS_TYPE_DISMISS_UNRESOLVED: Final = f"{DOMAIN}/dismiss_unresolved"

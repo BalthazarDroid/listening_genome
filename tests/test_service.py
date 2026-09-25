@@ -141,26 +141,77 @@ async def test_get_rebuilds_only_when_nothing_is_cached(tmp_path: Path) -> None:
         await store.close()
     assert len(clock_calls) == 1
     assert first["generated_at"] == NOW + 1
-    # served from cache (the stale flag is the short listen; see the next test)
-    assert second == {**first, "stale": True}
+    # served from cache, and current: the stored short listen does not count (see below)
+    assert second == first
 
 
-async def test_get_flags_stale_on_count_mismatch_as_the_fork_does(tmp_path: Path) -> None:
+async def test_get_compares_like_for_like_listen_counts(tmp_path: Path) -> None:
     """
-    The fork compares the store's RAW listen count with the cached, post-filter total.
+    ``stale`` compares the cached genome's count with the listens a rebuild would count now.
 
-    Ported as-is: with one sub-30s listen stored, the two never agree, so a cached genome is
-    always served with ``stale`` set. Pinned here so that changing it is a deliberate choice.
+    Changed from the fork on purpose. The fork compared the store's RAW row count with the
+    cached ``stats.total_listens``, which is counted AFTER the 30-second minimum-play filter, so
+    any history holding a single sub-30s listen was reported stale forever (real data: 221,179
+    rows against 221,178 counted). This test used to pin that behaviour (``stale is True``
+    straight after a rebuild). The comparison is now like-for-like
+    (``GenomeStore.count_eligible_listens`` applies the engine's filter), so:
+
+    * straight after a rebuild, with a sub-30s listen stored, the genome is current;
+    * another sub-30s listen arriving still leaves it current - a rebuild would not change;
+    * a new listen that clears the threshold makes it stale.
     """
     store = await _seeded_store(tmp_path)
     try:
         service = _service(store)
         await service.rebuild(now=NOW)
         served = await service.get()
+        assert served["stats"]["total_listens"] == 4
+        assert await store.count_listens("household") == 5  # the short one is still stored
+        assert served["stale"] is False
+
+        await store.add_listens(
+            [_listen("Gamma", "Skip", played_at=NOW + 60, played_ms=5_000, fully_played=False)],
+            listener="household",
+        )
+        assert (await service.get())["stale"] is False
+
+        # unknown play time counts, exactly as in the engine
+        await store.add_listens(
+            [_listen("Gamma", "Whole", played_at=NOW + 120, played_ms=None, fully_played=None)],
+            listener="household",
+        )
+        stale = await service.get()
+        assert stale["stale"] is True
+        # and the cached genome itself is served unchanged, only flagged
+        assert stale["stats"]["total_listens"] == 4
     finally:
         await store.close()
-    assert served["stats"]["total_listens"] == 4
-    assert served["stale"] is True
+
+
+async def test_count_eligible_listens_matches_the_engine_filter(tmp_path: Path) -> None:
+    """The SQL count agrees with a rebuild's total at every threshold, including its edges."""
+    store = await _seeded_store(tmp_path)
+    try:
+        await store.add_listens(
+            [
+                _listen("Delta", "Edge", played_at=NOW + 1, played_ms=30_000),
+                _listen("Delta", "Unknown", played_at=NOW + 2, played_ms=None),
+            ],
+            listener="household",
+        )
+        for seconds in (0, 10, 30, 31, 200, 201):
+            service = GenomeService(
+                store,
+                BASELINE,
+                GenomeServiceSettings(min_seconds_played=seconds),
+                tz_offset_seconds=lambda: 0,
+            )
+            genome = await service.rebuild(now=NOW)
+            counted = await store.count_eligible_listens("household", min_seconds_played=seconds)
+            assert counted == genome["stats"]["total_listens"], seconds
+            assert (await service.get())["stale"] is False, seconds
+    finally:
+        await store.close()
 
 
 async def test_get_refresh_forces_a_rebuild(tmp_path: Path) -> None:

@@ -112,7 +112,14 @@ async def test_entities_share_one_service_device(
     entries = er.async_entries_for_config_entry(entity_registry, loaded_entry.entry_id)
     assert {entry.unique_id for entry in entries} == {
         f"{loaded_entry.entry_id}_{key}"
-        for key in ("obscurity_index", "divergence", "top_artist", "listens_stored", "last_rebuild")
+        for key in (
+            "obscurity_index",
+            "divergence",
+            "top_artist",
+            "listens_stored",
+            "last_rebuild",
+            "rebuild_now",
+        )
     }
     [device_id] = {entry.device_id for entry in entries}
     device = device_registry.async_get(device_id)

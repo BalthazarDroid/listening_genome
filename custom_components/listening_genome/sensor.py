@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from . import ListeningGenomeConfigEntry
     from .core.models import GenomeResult
 
-# the sensors only read, so the coordinator is the only thing that ever touches the store
+# the sensors only read the coordinator's data, which rebuilds push; they never touch the store
 PARALLEL_UPDATES = 0
 
 
@@ -50,6 +50,7 @@ class GenomeSensorDescription(SensorEntityDescription):
     """A sensor whose state is a pure function of the genome."""
 
     value_fn: Callable[[GenomeResult], str | int | float | datetime | None]
+    attributes_fn: Callable[[GenomeResult], dict[str, Any]] | None = None
 
 
 SENSORS: tuple[GenomeSensorDescription, ...] = (
@@ -82,6 +83,8 @@ SENSORS: tuple[GenomeSensorDescription, ...] = (
         translation_key="last_rebuild",
         device_class=SensorDeviceClass.TIMESTAMP,
         value_fn=_generated_at,
+        # whether listens that would count have been stored since this genome was computed
+        attributes_fn=lambda genome: {"stale": bool(genome.get("stale", False))},
     ),
 )
 
@@ -125,3 +128,12 @@ class GenomeSensor(CoordinatorEntity[DataUpdateCoordinator["GenomeResult"]], Sen
         if genome is None:
             return None
         return self.entity_description.value_fn(genome)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return the description's extra attributes for the current genome, if it has any."""
+        attributes_fn = self.entity_description.attributes_fn
+        genome = self.coordinator.data
+        if attributes_fn is None or genome is None:
+            return None
+        return attributes_fn(genome)

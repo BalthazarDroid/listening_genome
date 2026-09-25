@@ -7,20 +7,25 @@ Home Assistant's loader gives it - never as the bare ``listening_genome`` the co
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.listening_genome.const import CONF_MA_ENTRY_ID, DOMAIN, STORAGE_DIRNAME
-from custom_components.listening_genome.core.constants import RESOLVE_STATE_OK
+from custom_components.listening_genome.core.constants import (
+    RESOLVE_STATE_OK,
+    RESOLVE_STATE_PENDING,
+)
 from custom_components.listening_genome.core.models import ArtistMeta, Baseline, Listen
 from custom_components.listening_genome.core.store import GenomeStore
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
+
+    from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
 # every seeded listen is played at this instant, so all carry the same recency weight and the
 # expected values below can be worked out by hand
@@ -128,3 +133,80 @@ def genome_entry() -> MockConfigEntry:
         data={CONF_MA_ENTRY_ID: "ma-entry-1"},
         entry_id="genome-entry-1",
     )
+
+
+# artists a test puts in the MusicBrainz queue: two the fixtures resolve, one MusicBrainz does
+# not know, and one whose lookup fails with HTTP 503 (see `music_apis`)
+PENDING_ARTISTS = ("Sigur Rós", "Kasabian", "Nobody Known", "Radiohead")
+FAILING_ARTIST = "Radiohead"
+
+
+@pytest.fixture
+async def pending_artists(seeded_store: Path) -> Path:
+    """Add :data:`PENDING_ARTISTS` to the seeded store, all due for resolution."""
+    store = GenomeStore(str(seeded_store))
+    await store.setup()
+    try:
+        await store.upsert_artist_meta(
+            [_meta(name, (), 0) for name in PENDING_ARTISTS], state=RESOLVE_STATE_PENDING
+        )
+        # _meta gives every artist a listener count; pending ones must not have one yet
+        await store.database.execute(  # type: ignore[union-attr]
+            "UPDATE genome_artist_meta SET lb_listeners = NULL WHERE resolve_state = 'pending'"
+        )
+        await store.database.commit()  # type: ignore[union-attr]
+    finally:
+        await store.close()
+    return seeded_store
+
+
+@pytest.fixture
+def fast_enrichment() -> Iterator[None]:
+    """
+    Drop the MusicBrainz pacing and throttles, so a pass never sleeps.
+
+    Real pacing is 2.5 s per artist and 1 request/second; under a frozen clock a throttle
+    waiting for time to pass would wait forever.
+    """
+    with (
+        patch("custom_components.listening_genome.GENOME_MB_ENRICHMENT_MIN_INTERVAL_SECONDS", 0),
+        patch("custom_components.listening_genome.MUSICBRAINZ_RATE_LIMIT", 1000),
+        patch("custom_components.listening_genome.LISTENBRAINZ_RATE_LIMIT", 1000),
+    ):
+        yield
+
+
+@pytest.fixture
+def music_apis(aioclient_mock: AiohttpClientMocker, fast_enrichment: None) -> AiohttpClientMocker:
+    """
+    Answer musicbrainz.org and api.listenbrainz.org from the fixtures, through HA's session.
+
+    The requests really go through the ``AiohttpClient`` built on ``async_get_clientsession``,
+    so ``aioclient_mock.mock_calls`` records the headers each one carried.
+    """
+    import re
+
+    from conftest import FixtureHttpClient
+    from pytest_homeassistant_custom_component.test_util.aiohttp import (
+        AiohttpClientMockResponse,
+    )
+
+    fixtures = FixtureHttpClient()
+
+    async def musicbrainz(method: str, url: Any, data: Any) -> AiohttpClientMockResponse:
+        params = dict(url.query)
+        if FAILING_ARTIST in params.get("query", ""):
+            return AiohttpClientMockResponse(method, url, status=503)
+        body = await fixtures.get_json(str(url.with_query(None)), params=params)
+        return AiohttpClientMockResponse(method, url, json=body)
+
+    async def listenbrainz(method: str, url: Any, data: Any) -> AiohttpClientMockResponse:
+        body = await fixtures.post_json(str(url), json=data)
+        return AiohttpClientMockResponse(method, url, json=body)
+
+    aioclient_mock.get(re.compile(r"^https://musicbrainz\.org/ws/2/"), side_effect=musicbrainz)
+    aioclient_mock.post(
+        re.compile(r"^https://api\.listenbrainz\.org/1/popularity/artist"),
+        side_effect=listenbrainz,
+    )
+    return aioclient_mock

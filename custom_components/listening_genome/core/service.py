@@ -20,10 +20,17 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from .constants import (
+    CONF_ENRICH_ENABLED,
+    CONF_MIN_SECONDS_PLAYED,
+    CONF_OBSCURITY_PERCENTILE,
+    CONF_REBUILD_SCHEDULE_HOUR,
+    CONF_RECENCY_HALF_LIFE_DAYS,
+    DEFAULT_ENRICH_ENABLED,
     DEFAULT_HALF_LIFE_DAYS,
     DEFAULT_MIN_SECONDS_PLAYED,
     DEFAULT_NEW_ARTIST_WINDOW_DAYS,
     DEFAULT_OBSCURITY_PERCENTILE,
+    DEFAULT_REBUILD_SCHEDULE_HOUR,
     DEFAULT_TOP_N,
     LISTENER_HOUSEHOLD,
     LOGGER,
@@ -36,7 +43,7 @@ from .engine import build_genome
 from .models import EngineParams, GenomeInputs
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from .models import Baseline, GenomeRebuildResult, GenomeResult
     from .store import GenomeStore
@@ -46,11 +53,39 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class GenomeServiceSettings:
-    """The engine settings the fork read from its core config (same keys, same defaults)."""
+    """
+    The settings the fork read from its core config (same keys, same defaults).
+
+    The first three drive the engine. The last two are scheduling settings the service itself
+    never reads; they live here so one object, built once from the entry's options, carries
+    every setting the integration has.
+    """
 
     half_life_days: int = DEFAULT_HALF_LIFE_DAYS
     obscurity_percentile: int = DEFAULT_OBSCURITY_PERCENTILE
     min_seconds_played: int = DEFAULT_MIN_SECONDS_PLAYED
+    rebuild_schedule_hour: int = DEFAULT_REBUILD_SCHEDULE_HOUR
+    enrich_enabled: bool = DEFAULT_ENRICH_ENABLED
+
+    @classmethod
+    def from_options(cls, options: Mapping[str, object]) -> GenomeServiceSettings:
+        """Build settings from stored options, keyed by the fork's config keys; missing = default."""
+
+        def _int(key: str, default: int) -> int:
+            value = options.get(key, default)
+            return int(value) if isinstance(value, int | float | str) else default
+
+        return cls(
+            half_life_days=_int(CONF_RECENCY_HALF_LIFE_DAYS, DEFAULT_HALF_LIFE_DAYS),
+            obscurity_percentile=_int(CONF_OBSCURITY_PERCENTILE, DEFAULT_OBSCURITY_PERCENTILE),
+            min_seconds_played=_int(CONF_MIN_SECONDS_PLAYED, DEFAULT_MIN_SECONDS_PLAYED),
+            rebuild_schedule_hour=_int(CONF_REBUILD_SCHEDULE_HOUR, DEFAULT_REBUILD_SCHEDULE_HOUR),
+            enrich_enabled=bool(options.get(CONF_ENRICH_ENABLED, DEFAULT_ENRICH_ENABLED)),
+        )
+
+    def engine_settings(self) -> tuple[int, int, int]:
+        """Return the three settings a rebuild's result depends on."""
+        return (self.half_life_days, self.obscurity_percentile, self.min_seconds_played)
 
 
 async def _run_inline(func: Callable[[], GenomeResult]) -> GenomeResult:
@@ -101,17 +136,40 @@ class GenomeService:
         """
         Return ``listener``'s genome, from cache unless ``refresh`` is set (fork: ``genome/get``).
 
-        A cached result whose recorded listen count no longer matches the store is still
-        returned, but with ``stale`` set, exactly as the fork did.
+        A cached result is still returned when the store has moved on since it was computed,
+        but with ``stale`` set. "Moved on" is judged like-for-like: the cached
+        ``stats.total_listens`` counts only listens that cleared ``min_seconds_played``, so it
+        is compared with the store's count of listens a rebuild would count *now*
+        (:meth:`GenomeStore.count_eligible_listens`), not with every stored row.
+
+        The fork compared it with the raw row count, so any history containing one listen
+        under 30 seconds was reported stale forever (221,179 rows vs 221,178 counted on the
+        real data). Here a new sub-threshold listen leaves the genome current - it would not
+        change a rebuild - while a new qualifying listen makes it stale. A changed
+        ``min_seconds_played`` usually shows as stale too, which is right: a rebuild under the
+        new threshold would count differently.
         """
         if not refresh:
-            cached = await self.store.get_cached_genome(listener)
+            cached = await self.get_cached(listener)
             if cached is not None:
-                current_count = await self.store.count_listens(listener)
-                if current_count == cached["stats"]["total_listens"]:
-                    return cached
-                return cast("GenomeResult", {**cached, "stale": True})
+                return cached
         return (await self.rebuild_with_stats(listener))["genome"]
+
+    async def get_cached(self, listener: str = LISTENER_HOUSEHOLD) -> GenomeResult | None:
+        """
+        Return the cached genome with ``stale`` set as :meth:`get` describes, or ``None``.
+
+        Never rebuilds.
+        """
+        cached = await self.store.get_cached_genome(listener)
+        if cached is None:
+            return None
+        current_count = await self.store.count_eligible_listens(
+            listener, min_seconds_played=self.settings.min_seconds_played
+        )
+        if current_count == cached["stats"]["total_listens"]:
+            return cached
+        return cast("GenomeResult", {**cached, "stale": True})
 
     async def rebuild(
         self, listener: str = LISTENER_HOUSEHOLD, *, now: int | None = None
@@ -191,6 +249,20 @@ class GenomeService:
             RESOLVE_STATE_NOT_FOUND, 0
         )
         stats["unresolved_dismissed"] = await self._unresolved_dismissed()
+
+    async def dismiss_unresolved(self) -> bool:
+        """
+        Dismiss the "could not be identified" notice for the artists failing right now.
+
+        The fork's ``genome/dismiss_unresolved``: records a fingerprint of the artists currently
+        in the ``error`` state rather than muting the notice outright, so a different (or an
+        additional) failing artist brings it back. No network.
+
+        :return: Whether the current failed-artist set is now fully dismissed.
+        """
+        failed = await self.store.all_failed_artist_keys()
+        await self.store.dismiss_unresolved(sorted(failed))
+        return await self._unresolved_dismissed()
 
     async def _unresolved_dismissed(self) -> bool:
         """Return whether the currently-failed artist set exactly matches the dismissed one."""

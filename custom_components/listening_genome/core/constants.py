@@ -102,6 +102,16 @@ DEFAULT_OBSCURITY_PERCENTILE: Final[int] = 25
 DEFAULT_MIN_SECONDS_PLAYED: Final[int] = 30
 DEFAULT_REBUILD_SCHEDULE_HOUR: Final[int] = 4
 
+# Accepted ranges for the settings above (the options flow validates against these).
+# A half-life of 0 disables recency decay; 10 years is far past any history's useful weight.
+HALF_LIFE_DAYS_RANGE: Final[tuple[int, int]] = (0, 3650)
+MIN_SECONDS_PLAYED_RANGE: Final[tuple[int, int]] = (0, 600)
+REBUILD_SCHEDULE_HOUR_RANGE: Final[tuple[int, int]] = (0, 23)
+# The engine looks the percentile up in `Baseline.listener_percentiles` by exact key and falls
+# back to a threshold of 0 (obscurity 0%) for any other value, so only the baseline's own
+# percentiles are valid. tests/test_operations.py checks these match the shipped baseline.
+OBSCURITY_PERCENTILE_CHOICES: Final[tuple[int, ...]] = (5, 10, 25, 50, 75, 90)
+
 # config actions (§3.2)
 
 CONF_ACTION_REBUILD_NOW: Final[str] = "rebuild_now"
@@ -167,6 +177,12 @@ LASTFM_RETRY_MAX_ATTEMPTS: Final[int] = 4
 LASTFM_RETRY_BASE_DELAY_SECONDS: Final[float] = 0.5
 LASTFM_RETRY_MAX_DELAY_SECONDS: Final[float] = 8.0
 
+# --- outbound identity --------------------------------------------------------------
+# MusicBrainz requires `Application/version ( contact-url )`. The version is read from
+# manifest.json at setup, so it is not repeated here.
+USER_AGENT_PRODUCT: Final[str] = "ListeningGenome"
+PROJECT_URL: Final[str] = "https://github.com/BalthazarDroid/listening_genome"
+
 # --- ListenBrainz popularity (§3.8) ---------------------------------------------------
 
 LISTENBRAINZ_POPULARITY_URL: Final[str] = "https://api.listenbrainz.org/1/popularity/artist"
@@ -189,6 +205,20 @@ GENOME_ENRICHMENT_TASK_ID: Final[str] = "genome_enrichment"
 # run": 500 artists is a little over 20 minutes, comfortably inside the hourly cadence, and a
 # backlog simply drains over successive runs.
 GENOME_ENRICHMENT_BATCH_LIMIT: Final[int] = 500
+# How often the background enrichment pass runs (the fork's `TaskSchedule.hourly(every=1)`).
+GENOME_ENRICHMENT_INTERVAL_SECONDS: Final[int] = 3600
+
+# Per-host throttles for the clients the enrichment pass uses. The fork gave MusicBrainz
+# `rate_limit=10, period=10` because its requests shared Music Assistant's client and MA's own
+# mirror. Here they go to musicbrainz.org itself, whose documented limit is 1 request/second per
+# client, so the throttle says exactly that. With the 2.5s per-artist pacing above (two requests
+# per artist) it never actually waits; it is the backstop, not the pace. ListenBrainz keeps the
+# fork's 1/second.
+MUSICBRAINZ_RATE_LIMIT: Final[int] = 1
+MUSICBRAINZ_RATE_PERIOD_SECONDS: Final[float] = 1.0
+LISTENBRAINZ_RATE_LIMIT: Final[int] = 1
+LISTENBRAINZ_RATE_PERIOD_SECONDS: Final[float] = 1.0
+MUSICBRAINZ_BASE_URL: Final[str] = "https://musicbrainz.org/ws/2"
 
 # --- discovery: cold corners + Last.fm similar artists (D-16) ---------------------------
 # The read path (`genome/discovery`) serves cold corners computed from local data and

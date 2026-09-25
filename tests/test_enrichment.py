@@ -105,3 +105,35 @@ async def test_artist_popularity_batches_large_requests(
     await artist_popularity(mbids, client=fixture_http_client)
     post_calls = [call for call in fixture_http_client.calls if call[0] == "POST"]
     assert len(post_calls) == 3  # 120 mbids / 50 per batch, rounded up
+
+
+async def test_musicbrainz_lookups_go_to_musicbrainz_org_not_the_ma_mirror() -> None:
+    """
+    Every MusicBrainz request must go to musicbrainz.org itself.
+
+    The fork preferred Music Assistant's own provider and fell back to MA's mirror,
+    musicbrainz-mirror.music-assistant.io. Removing the provider path during the port made
+    that fallback the ONLY path, while a comment claimed requests went to musicbrainz.org.
+    The mirror answers 403 to anything not identifying as Music Assistant, so every lookup on
+    a real install would have failed and marked the artist failed. No test caught it, because
+    the fixture client matched request paths and never looked at the host.
+
+    This one looks at the host of the request actually made, not at a constant.
+    """
+    from urllib.parse import urlsplit
+
+    seen: list[str] = []
+
+    class _Recorder:
+        async def get_json(self, url: str, *, params=None, headers=None):
+            seen.append(url)
+            return {"artists": []}
+
+        async def post_json(self, url: str, *, json=None, headers=None):
+            seen.append(url)
+            return []
+
+    assert await resolve_artist("Portishead", client=_Recorder()) is None
+    assert seen, "no MusicBrainz request was made at all"
+    hosts = {urlsplit(url).hostname for url in seen}
+    assert hosts == {"musicbrainz.org"}, f"MusicBrainz requests went to {hosts}"

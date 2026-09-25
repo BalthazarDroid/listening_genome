@@ -294,6 +294,27 @@ class GenomeStore:
             {"listener": listener},
         )
 
+    async def count_eligible_listens(self, listener: str, *, min_seconds_played: int) -> int:
+        """
+        Return how many of ``listener``'s listens a rebuild would count, without rebuilding.
+
+        The same selection a rebuild makes, in SQL: :meth:`iter_listens` reads rows with
+        ``played_at > 0``, and the engine's ``_filter_eligible`` then keeps a listen when its
+        play time is unknown or at least ``min_seconds_played``. The result is therefore
+        directly comparable with a genome's ``stats.total_listens``, which :meth:`count_listens`
+        (every stored row) is not.
+
+        :param listener: The listener id.
+        :param min_seconds_played: The engine's minimum play time, in seconds.
+        """
+        assert self.database is not None
+        return await self.database.get_count_from_query(
+            f"SELECT 1 FROM {DB_TABLE_GENOME_LISTENS} "
+            "WHERE listener = :listener AND played_at > 0 "
+            "AND (played_ms IS NULL OR played_ms >= :floor_ms)",
+            {"listener": listener, "floor_ms": min_seconds_played * 1000},
+        )
+
     async def get_artist_meta(self, artist_keys: Sequence[str]) -> dict[str, ArtistMeta]:
         """Return known :class:`ArtistMeta` rows, keyed by ``artist_key`` (missing keys omitted)."""
         assert self.database is not None

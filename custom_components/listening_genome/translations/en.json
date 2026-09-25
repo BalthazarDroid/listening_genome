@@ -21,6 +21,40 @@
       "single_instance_allowed": "Listening Genome is already configured. Only a single configuration is possible."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Listening Genome settings",
+        "description": "How the genome is computed and when it is refreshed. Saving reloads the integration; if a setting that changes the result was edited, the genome is rebuilt straight away.",
+        "data": {
+          "recency_half_life_days": "Recency half-life (days)",
+          "obscurity_percentile": "Obscurity threshold (popularity percentile)",
+          "min_seconds_played": "Minimum seconds played",
+          "rebuild_schedule_hour": "Daily rebuild hour (local time)",
+          "enrich_enabled": "Look up artists on MusicBrainz and ListenBrainz"
+        },
+        "data_description": {
+          "recency_half_life_days": "A listen this many days old counts half as much as one today. 0 turns recency weighting off. 0 to 3650.",
+          "obscurity_percentile": "An artist counts as obscure when fewer ListenBrainz listeners have played them than this share of all artists.",
+          "min_seconds_played": "Plays shorter than this are stored but not counted. 0 to 600.",
+          "rebuild_schedule_hour": "The genome is recomputed once a day at this hour, in Home Assistant's time zone. 0 to 23.",
+          "enrich_enabled": "Every hour, identify new artists on MusicBrainz (genres, era, country) and fetch their ListenBrainz popularity. Needs internet access."
+        }
+      }
+    }
+  },
+  "selector": {
+    "obscurity_percentile": {
+      "options": {
+        "5": "5th percentile",
+        "10": "10th percentile",
+        "25": "25th percentile (default)",
+        "50": "50th percentile",
+        "75": "75th percentile",
+        "90": "90th percentile"
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "obscurity_index": {
@@ -38,6 +72,16 @@
       "last_rebuild": {
         "name": "Last rebuild"
       }
+    },
+    "button": {
+      "rebuild_now": {
+        "name": "Rebuild now"
+      }
+    }
+  },
+  "exceptions": {
+    "rebuild_failed": {
+      "message": "The listening genome could not be rebuilt: {error}"
     }
   }
 }
