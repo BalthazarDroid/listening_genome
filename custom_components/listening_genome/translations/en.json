@@ -1,0 +1,43 @@
+{
+  "config": {
+    "step": {
+      "confirm": {
+        "title": "Link to Music Assistant",
+        "description": "Listening Genome will build your listening profile from the Music Assistant integration **{ma_name}**. It stores only a reference to that entry, never its address or token."
+      },
+      "pick": {
+        "title": "Choose a Music Assistant server",
+        "description": "More than one Music Assistant integration is set up. Choose the one whose listening history Listening Genome should use. Only a reference to it is stored, never its address or token.",
+        "data": {
+          "ma_entry_id": "Music Assistant server"
+        }
+      }
+    },
+    "error": {
+      "ma_entry_missing": "That Music Assistant entry no longer exists. Choose another."
+    },
+    "abort": {
+      "ma_not_configured": "Listening Genome reads your history from Music Assistant, so the Music Assistant integration must be set up first. Add it under Settings > Devices & services, then add Listening Genome again.",
+      "single_instance_allowed": "Listening Genome is already configured. Only a single configuration is possible."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "obscurity_index": {
+        "name": "Obscurity index"
+      },
+      "divergence": {
+        "name": "Divergence"
+      },
+      "top_artist": {
+        "name": "Top artist"
+      },
+      "listens_stored": {
+        "name": "Listens stored"
+      },
+      "last_rebuild": {
+        "name": "Last rebuild"
+      }
+    }
+  }
+}

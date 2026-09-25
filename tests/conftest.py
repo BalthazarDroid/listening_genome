@@ -27,6 +27,15 @@ _PACKAGE_PARENT = _HACS_ROOT / "custom_components"
 if str(_PACKAGE_PARENT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_PARENT))
 
+# The Home Assistant tests (tests/ha/) additionally need `custom_components` importable, since
+# that is how Home Assistant's loader imports a custom integration. That is the repo root,
+# which the code under test never imports anything else from - and never the fork.
+# Code under test is then imported twice under two names (`listening_genome.x` for the core
+# tests, `custom_components.listening_genome.x` for the HA tests); the HA tests only ever use
+# the latter, so the two copies never meet.
+if str(_HACS_ROOT) not in sys.path:
+    sys.path.append(str(_HACS_ROOT))
+
 MA_SERVER_REPO = _HACS_ROOT.parent / "server"
 
 

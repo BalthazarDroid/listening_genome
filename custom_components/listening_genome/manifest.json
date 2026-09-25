@@ -1,6 +1,9 @@
 {
   "domain": "listening_genome",
   "name": "Listening Genome",
+  "after_dependencies": [
+    "music_assistant"
+  ],
   "codeowners": [
     "@BalthazarDroid"
   ],
@@ -17,5 +20,6 @@
     "mashumaro>=3.13",
     "music-assistant-client>=1.2.0"
   ],
+  "single_config_entry": true,
   "version": "0.1.0"
 }
