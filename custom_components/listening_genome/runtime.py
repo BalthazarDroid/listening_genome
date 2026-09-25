@@ -1,9 +1,11 @@
 """
 Runtime state of a loaded entry, and the Home Assistant scheduling around it.
 
-What runs (rebuild, enrichment) and how it is recorded lives in ``core/operations.py``. This
-module decides *when*: a daily rebuild at the configured local hour, an hourly enrichment pass
-when enrichment is enabled, and on demand from the button or the websocket API. Everything
+What runs (rebuild, enrichment, imports) and how it is recorded lives in ``core/operations.py``.
+This module decides *when*: a daily rebuild at the configured local hour, an hourly enrichment
+pass when enrichment is enabled, a Last.fm poll every N hours when it is configured (plus one
+shortly after start-up, to catch up on whatever was scrobbled while Home Assistant was down),
+the one-time duplicate cleanup, and on demand from the button, the actions or the websocket API. Everything
 detached runs as a config-entry background task, tracked here so unload can cancel it and wait
 for it BEFORE the store closes (Home Assistant's own cancellation of entry background tasks
 happens only after ``async_unload_entry`` has returned, by which point the database is gone).
@@ -12,13 +14,20 @@ happens only after ``async_unload_entry`` has returned, by which point the datab
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_time_change,
+    async_track_time_interval,
+)
 
-from .const import ENRICHMENT_INTERVAL
+from .const import ENRICHMENT_INTERVAL, LASTFM_STARTUP_POLL_DELAY
 from .core.constants import LOGGER
 
 if TYPE_CHECKING:
@@ -29,10 +38,11 @@ if TYPE_CHECKING:
     from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
     from .core.jobs import JobTracker
-    from .core.models import GenomeRebuildResult, GenomeResult
+    from .core.models import GenomeImportResult, GenomeRebuildResult, GenomeResult
     from .core.operations import EnrichmentReport, GenomeOperations
     from .core.service import GenomeService, GenomeServiceSettings
     from .core.store import GenomeStore
+    from .live_capture import MusicAssistantCapture
 
 
 @dataclass(slots=True)
@@ -48,6 +58,7 @@ class ListeningGenomeData:
     coordinator: DataUpdateCoordinator[GenomeResult]
     settings: GenomeServiceSettings
     user_agent: str
+    capture: MusicAssistantCapture
     _unsubscribers: list[CALLBACK_TYPE] = field(default_factory=list)
     _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
 
@@ -70,10 +81,26 @@ class ListeningGenomeData:
                     cancel_on_shutdown=True,
                 )
             )
+        lastfm = self.settings.lastfm_poll_enabled and self.settings.lastfm_configured
+        if lastfm:
+            self._unsubscribers.append(
+                async_track_time_interval(
+                    self.hass,
+                    self._handle_lastfm_interval,
+                    timedelta(hours=self.settings.lastfm_poll_interval_hours),
+                    name="Listening Genome Last.fm poll",
+                    cancel_on_shutdown=True,
+                )
+            )
+            self._unsubscribers.append(
+                async_call_later(self.hass, LASTFM_STARTUP_POLL_DELAY, self._handle_lastfm_interval)
+            )
         LOGGER.info(
-            "Listening Genome scheduled: daily rebuild at %02d:00 local time; enrichment %s",
+            "Listening Genome scheduled: daily rebuild at %02d:00 local time; enrichment %s; "
+            "Last.fm poll %s",
             hour,
             f"every {ENRICHMENT_INTERVAL}" if self.settings.enrich_enabled else "disabled",
+            f"every {self.settings.lastfm_poll_interval_hours} h" if lastfm else "off",
         )
 
     async def async_shutdown(self) -> None:
@@ -85,6 +112,9 @@ class ListeningGenomeData:
         """
         while self._unsubscribers:
             self._unsubscribers.pop()()
+        # the capture writes its open plays on the way out, so it stops before the tasks are
+        # cancelled and long before the store closes
+        await self.capture.async_stop()
         tasks = [task for task in self._tasks if not task.done()]
         for task in tasks:
             task.cancel()
@@ -122,6 +152,81 @@ class ListeningGenomeData:
         return True
 
     @callback
+    def async_request_lastfm_import(self, *, max_pages: int = 0, rebuild: bool = False) -> bool:
+        """
+        Start a Last.fm import in the background; ``False`` if one is already running.
+
+        :param max_pages: Stop after this many pages (``0``: until done).
+        :param rebuild: Rebuild afterwards if anything was added (a manual import: the person
+            who asked wants to see the result; the hourly poll leaves it to the daily rebuild).
+        """
+        if self.operations.lastfm_import_running:
+            return False
+        self._spawn(
+            self._background_lastfm_import(max_pages, rebuild=rebuild),
+            "Listening Genome Last.fm import",
+        )
+        return True
+
+    @callback
+    def async_request_apple_import(self, path: str, display_name: str, *, cleanup: bool) -> None:
+        """Import an Apple Music CSV in the background, then rebuild if it added anything."""
+        self._spawn(
+            self._background_apple_import(path, display_name, cleanup=cleanup),
+            f"Listening Genome Apple Music import ({display_name})",
+        )
+
+    @callback
+    def async_request_duplicate_cleanup(self) -> None:
+        """Run the one-time duplicate cleanup in the background (a no-op once it has run)."""
+        self._spawn(self._background_duplicate_cleanup(), "Listening Genome duplicate cleanup")
+
+    @callback
+    def _handle_lastfm_interval(self, now: datetime) -> None:
+        """Interval listener (and the start-up one-shot): poll Last.fm."""
+        self.async_request_lastfm_import()
+
+    async def _background_lastfm_import(self, max_pages: int, *, rebuild: bool) -> None:
+        settings = self.settings
+        if not settings.lastfm_configured:
+            return
+        try:
+            result = await self.operations.import_lastfm(
+                settings.lastfm_username, settings.lastfm_api_key, max_pages=max_pages
+            )
+        except Exception:  # recorded on the job and logged by the operation, key never in it
+            return
+        await self._rebuild_after_import(result, rebuild=rebuild)
+
+    async def _background_apple_import(
+        self, path: str, display_name: str, *, cleanup: bool
+    ) -> None:
+        try:
+            result = await self.operations.import_apple(path, display_name=display_name)
+        except Exception:  # recorded on the job and logged by the operation
+            return
+        finally:
+            if cleanup:
+                await self.hass.async_add_executor_job(_remove_file, path)
+        await self._rebuild_after_import(result, rebuild=True)
+
+    async def _rebuild_after_import(
+        self, result: GenomeImportResult | None, *, rebuild: bool
+    ) -> None:
+        if rebuild and result is not None and result["rows_imported"]:
+            await self._background_rebuild("import added listens")
+
+    async def _background_duplicate_cleanup(self) -> None:
+        """The one-time cleanup, then a rebuild so the sensors show the corrected genome."""
+        try:
+            removed = await self.operations.remove_duplicates_once()
+        except Exception:
+            LOGGER.exception("Listening Genome duplicate cleanup failed")
+            return
+        if removed is not None and removed.total:
+            await self._background_rebuild("duplicates removed")
+
+    @callback
     def _handle_daily_rebuild(self, now: datetime) -> None:
         """Time-change listener: the daily rebuild."""
         self.async_request_rebuild("daily schedule")
@@ -151,6 +256,12 @@ class ListeningGenomeData:
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
         return task
+
+
+def _remove_file(path: str) -> None:
+    """Delete a temporary upload copy (blocking; runs in the executor)."""
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(path)
 
 
 __all__ = ["ListeningGenomeData"]

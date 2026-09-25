@@ -95,7 +95,9 @@ CONF_REBUILD_SCHEDULE_HOUR: Final[str] = "rebuild_schedule_hour"
 DEFAULT_LASTFM_USERNAME: Final[str] = ""
 DEFAULT_LASTFM_API_KEY: Final[str] = ""
 DEFAULT_LASTFM_POLL_ENABLED: Final[bool] = False
-DEFAULT_LASTFM_POLL_INTERVAL_HOURS: Final[int] = 6
+# hourly (the fork: 6). One small request an hour; live MA plays land at once, and hourly keeps
+# the other players' scrobbles, and the removal of MA's own, close behind.
+DEFAULT_LASTFM_POLL_INTERVAL_HOURS: Final[int] = 1
 DEFAULT_APPLE_IMPORT_DIR: Final[str] = ""
 DEFAULT_ENRICH_ENABLED: Final[bool] = True
 DEFAULT_OBSCURITY_PERCENTILE: Final[int] = 25
@@ -107,6 +109,7 @@ DEFAULT_REBUILD_SCHEDULE_HOUR: Final[int] = 4
 HALF_LIFE_DAYS_RANGE: Final[tuple[int, int]] = (0, 3650)
 MIN_SECONDS_PLAYED_RANGE: Final[tuple[int, int]] = (0, 600)
 REBUILD_SCHEDULE_HOUR_RANGE: Final[tuple[int, int]] = (0, 23)
+LASTFM_POLL_INTERVAL_HOURS_RANGE: Final[tuple[int, int]] = (1, 24)
 # The engine looks the percentile up in `Baseline.listener_percentiles` by exact key and falls
 # back to a threshold of 0 (obscurity 0%) for any other value, so only the baseline's own
 # percentiles are valid. tests/test_operations.py checks these match the shipped baseline.
@@ -218,6 +221,10 @@ MUSICBRAINZ_RATE_LIMIT: Final[int] = 1
 MUSICBRAINZ_RATE_PERIOD_SECONDS: Final[float] = 1.0
 LISTENBRAINZ_RATE_LIMIT: Final[int] = 1
 LISTENBRAINZ_RATE_PERIOD_SECONDS: Final[float] = 1.0
+# Last.fm asks for no more than five requests a second per key; the importer also waits
+# LASTFM_INTER_PAGE_DELAY_SECONDS between pages
+LASTFM_RATE_LIMIT: Final[int] = 5
+LASTFM_RATE_PERIOD_SECONDS: Final[float] = 1.0
 MUSICBRAINZ_BASE_URL: Final[str] = "https://musicbrainz.org/ws/2"
 
 # --- discovery: cold corners + Last.fm similar artists (D-16) ---------------------------

@@ -118,6 +118,7 @@ async def test_entities_share_one_service_device(
             "top_artist",
             "listens_stored",
             "last_rebuild",
+            "music_assistant_connection",
             "rebuild_now",
         )
     }

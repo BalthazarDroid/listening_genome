@@ -1,0 +1,16 @@
+import_lastfm:
+  fields:
+    max_pages:
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 10000
+          mode: box
+import_apple_csv:
+  fields:
+    path:
+      required: true
+      example: /media/Apple Music - Play History Daily Tracks.csv
+      selector:
+        text:

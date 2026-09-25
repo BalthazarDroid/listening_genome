@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from listening_genome.core.jobs import (
+    ALL_JOBS,
     INTERRUPTED_MESSAGE,
     JOB_ENRICHMENT,
     JOB_REBUILD,
@@ -38,7 +39,8 @@ def _clock() -> float:
 async def test_every_job_starts_idle() -> None:
     tracker = JobTracker(_CountingStore(), clock=_clock)
     jobs = tracker.get_all()
-    assert set(jobs) == {JOB_REBUILD, JOB_ENRICHMENT}
+    assert set(jobs) == set(ALL_JOBS)
+    assert {JOB_REBUILD, JOB_ENRICHMENT} <= set(jobs)
     assert all(job["state"] == "idle" for job in jobs.values())
 
 

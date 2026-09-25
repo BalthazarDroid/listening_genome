@@ -658,3 +658,302 @@ async def test_player_names_uses_the_injected_resolver(tmp_path: Path) -> None:
         assert await store.player_names() == {"kitchen_id": "kitchen_id", "garage_id": "garage_id"}
     finally:
         await store.close()
+
+
+# --- 2c: duplicate removal ------------------------------------------------------------------
+
+_DAY = 86400
+_NOON = 1_700_049_600  # 2023-11-15 12:00 UTC
+
+
+async def _sources(store: GenomeStore) -> dict[str, int]:
+    return await store.source_counts("household")
+
+
+async def test_apple_same_day_removes_every_lastfm_copy_that_day(tmp_path: Path) -> None:
+    """Apple saw the track that day: all Last.fm rows for it that day go, Apple's stay."""
+    store = await _new_store(tmp_path)
+    try:
+        day_start = (_NOON // _DAY) * _DAY
+        await store.add_listens(
+            [_listen(played_at=day_start + 3600), _listen(played_at=day_start + 7200)],
+            listener="household",
+        )
+        await store.add_listens(
+            [
+                _listen(source="lastfm", played_at=day_start + 3700),
+                _listen(source="lastfm", played_at=day_start + 7300),
+                _listen(source="lastfm", played_at=day_start + 20000),
+            ],
+            listener="household",
+        )
+        removed = await store.remove_duplicate_listens("household")
+        assert (removed.apple, removed.music_assistant) == (3, 0)
+        assert await _sources(store) == {"apple_export": 2}
+    finally:
+        await store.close()
+
+
+async def test_apple_rule_keeps_other_days_and_other_tracks(tmp_path: Path) -> None:
+    """A Last.fm play on another UTC day, or of another track, is not a duplicate."""
+    store = await _new_store(tmp_path)
+    try:
+        day_start = (_NOON // _DAY) * _DAY
+        await store.add_listens([_listen(played_at=day_start + 60)], listener="household")
+        await store.add_listens(
+            [
+                # same track, the previous UTC day (one minute before midnight)
+                _listen(source="lastfm", played_at=day_start - 60),
+                # same day, different track
+                _listen(source="lastfm", played_at=day_start + 600, track_key="viðrarvelti"),
+                # same day, same title, different artist
+                _listen(source="lastfm", played_at=day_start + 1200, artist_key="someoneelse"),
+            ],
+            listener="household",
+        )
+        removed = await store.remove_duplicate_listens("household")
+        assert removed.total == 0
+        assert await _sources(store) == {"apple_export": 1, "lastfm": 3}
+    finally:
+        await store.close()
+
+
+async def test_duplicate_removal_is_idempotent(tmp_path: Path) -> None:
+    """
+    A second pass over the same history removes nothing.
+
+    It runs after every import. A count-based rule ("drop as many as Apple counted") failed
+    this on the real history: the second pass ate another 361 rows.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        day_start = (_NOON // _DAY) * _DAY
+        await store.add_listens([_listen(played_at=day_start + 60)], listener="household")
+        await store.add_listens(
+            [_listen(source="lastfm", played_at=day_start + 60 * k) for k in (2, 5, 9)],
+            listener="household",
+        )
+        first = await store.remove_duplicate_listens("household")
+        second = await store.remove_duplicate_listens("household")
+        assert first.total == 3
+        assert second.total == 0
+    finally:
+        await store.close()
+
+
+async def test_duplicate_removal_respects_its_time_range(tmp_path: Path) -> None:
+    """A scoped pass (after an import) leaves duplicates outside its days alone."""
+    store = await _new_store(tmp_path)
+    try:
+        day_a = (_NOON // _DAY) * _DAY
+        day_b = day_a + 10 * _DAY
+        for day in (day_a, day_b):
+            await store.add_listens([_listen(played_at=day + 60)], listener="household")
+            await store.add_listens(
+                [_listen(source="lastfm", played_at=day + 120)], listener="household"
+            )
+        removed = await store.remove_duplicate_listens(
+            "household", since=day_b + 5000, until=day_b + 6000
+        )
+        # whole UTC days: the range sits inside day_b, and day_b's pair is still found
+        assert removed.apple == 1
+        assert await _sources(store) == {"apple_export": 2, "lastfm": 1}
+    finally:
+        await store.close()
+
+
+async def test_ma_scrobble_removed_one_track_length_after_the_live_row(tmp_path: Path) -> None:
+    """
+    MA scrobbles at the END of a play; the live row is stamped at the START.
+
+    The Last.fm copy lands ~duration later, so a fixed +-90 s window (the old ``dedupe_window``)
+    would never match it.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        start = _NOON
+        await store.add_listens(
+            [_listen(source="ma_playlog", played_at=start, duration_ms=240_000)],
+            listener="household",
+        )
+        await store.add_listens(
+            [_listen(source="lastfm", played_at=start + 245)], listener="household"
+        )
+        removed = await store.remove_duplicate_listens("household")
+        assert (removed.apple, removed.music_assistant) == (0, 1)
+        assert await _sources(store) == {"ma_playlog": 1}
+    finally:
+        await store.close()
+
+
+async def test_ma_rule_matches_multi_artist_credit_and_only_once(tmp_path: Path) -> None:
+    """
+    "Artist, Guest" on Last.fm matches the MA row for "Artist"; each MA row cancels one copy.
+
+    A second Last.fm play of the same track inside the window is a genuine second play (a
+    repeat that MA would have captured as its own row) and stays.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        start = _NOON
+        await store.add_listens(
+            [_listen(source="ma_playlog", played_at=start, duration_ms=200_000)],
+            listener="household",
+        )
+        await store.add_listens(
+            [
+                _listen(source="lastfm", played_at=start + 205, artist_key="sigurros, jonsi"),
+                _listen(source="lastfm", played_at=start + 410),
+            ],
+            listener="household",
+        )
+        removed = await store.remove_duplicate_listens("household")
+        assert removed.music_assistant == 1
+        assert await _sources(store) == {"ma_playlog": 1, "lastfm": 1}
+    finally:
+        await store.close()
+
+
+async def test_ma_rule_ignores_lastfm_plays_outside_the_window(tmp_path: Path) -> None:
+    """Before the start (beyond clock skew) or well after the end is a different play."""
+    store = await _new_store(tmp_path)
+    try:
+        start = _NOON
+        await store.add_listens(
+            [_listen(source="ma_playlog", played_at=start, duration_ms=200_000)],
+            listener="household",
+        )
+        await store.add_listens(
+            [
+                _listen(source="lastfm", played_at=start - 600),
+                # beyond the track's length plus the hour a pause may add
+                _listen(source="lastfm", played_at=start + 200 + 3600 + 60),
+            ],
+            listener="household",
+        )
+        removed = await store.remove_duplicate_listens("household")
+        assert removed.total == 0
+    finally:
+        await store.close()
+
+
+async def test_ma_rule_does_not_match_a_longer_different_artist(tmp_path: Path) -> None:
+    """A whole-word prefix only: "queens of the stone age" is not a credit of "queen"."""
+    store = await _new_store(tmp_path)
+    try:
+        await store.add_listens(
+            [_listen(source="ma_playlog", played_at=_NOON, artist_key="queen", track_key="go")],
+            listener="household",
+        )
+        await store.add_listens(
+            [
+                _listen(
+                    source="lastfm",
+                    played_at=_NOON + 200,
+                    artist_key="queens of the stone age",
+                    track_key="go",
+                )
+            ],
+            listener="household",
+        )
+        assert (await store.remove_duplicate_listens("household")).total == 0
+    finally:
+        await store.close()
+
+
+async def test_lastfm_resume_mark_never_moves_backwards(tmp_path: Path) -> None:
+    """The mark only advances; a stale or smaller value is ignored."""
+    store = await _new_store(tmp_path)
+    try:
+        assert await store.lastfm_resume_after() == 0
+        await store.set_lastfm_resume_after(2_000)
+        await store.set_lastfm_resume_after(1_000)
+        assert await store.lastfm_resume_after() == 2_000
+    finally:
+        await store.close()
+
+
+async def test_latest_played_at_is_per_source(tmp_path: Path) -> None:
+    """The newest row of one source, not of the whole table."""
+    store = await _new_store(tmp_path)
+    try:
+        await store.add_listens([_listen(played_at=5_000)], listener="household")
+        await store.add_listens(
+            [_listen(source="lastfm", played_at=3_000, track_key="x")], listener="household"
+        )
+        assert await store.latest_played_at("household", "lastfm") == 3_000
+        assert await store.latest_played_at("household", "ma_playlog") == 0
+    finally:
+        await store.close()
+
+
+async def test_ma_scrobble_delayed_by_a_pause_is_still_removed(tmp_path: Path) -> None:
+    """A 4-minute track paused 10 minutes: MA scrobbles at start + 14 min."""
+    store = await _new_store(tmp_path)
+    try:
+        await store.add_listens(
+            [_listen(source="ma_playlog", played_at=_NOON, duration_ms=240_000)],
+            listener="household",
+        )
+        await store.add_listens(
+            [_listen(source="lastfm", played_at=_NOON + 240 + 600)], listener="household"
+        )
+        assert (await store.remove_duplicate_listens("household")).music_assistant == 1
+    finally:
+        await store.close()
+
+
+async def test_ma_rule_pairs_each_pair_once_when_scoped_to_new_rows(tmp_path: Path) -> None:
+    """
+    Re-running over the same day must not eat a genuine second Last.fm play.
+
+    One MA play, its own scrobble, and a genuine second play of the track from a phone in the
+    window. The pass that adds the scrobble removes it; later passes (after each captured
+    track, over the whole day) consider only pairs with a NEW row, so the phone play stays.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        await store.add_listens(
+            [_listen(source="ma_playlog", played_at=_NOON, duration_ms=200_000)],
+            listener="household",
+        )
+        mark = await store.max_listen_id()
+        await store.add_listens(
+            [
+                _listen(source="lastfm", played_at=_NOON + 205),
+                _listen(source="lastfm", played_at=_NOON + 1500),
+            ],
+            listener="household",
+        )
+        first = await store.remove_duplicate_listens(
+            "household", since=_NOON, until=_NOON, added_after_id=mark
+        )
+        assert first.music_assistant == 1
+        for _ in range(3):
+            again = await store.remove_duplicate_listens(
+                "household", since=_NOON, until=_NOON, added_after_id=await store.max_listen_id()
+            )
+            assert again.total == 0
+        assert (await _sources(store))["lastfm"] == 1
+    finally:
+        await store.close()
+
+
+async def test_changing_lastfm_account_forgets_the_old_accounts_progress(tmp_path: Path) -> None:
+    """A new account is swept from its own beginning, not resumed from the old account's."""
+    store = await _new_store(tmp_path)
+    try:
+        # a database from before 2c: progress, but no account recorded - it is kept
+        await store.mark_lastfm_backfill_done()
+        await store.set_lastfm_resume_after(5_000)
+        assert await store.use_lastfm_account("Bob_Baird") is False
+        assert await store.lastfm_backfill_done() is True
+        # the same account, however it is capitalised
+        assert await store.use_lastfm_account("bob_baird") is False
+        # another account
+        assert await store.use_lastfm_account("someone_else") is True
+        assert await store.lastfm_backfill_done() is False
+        assert await store.lastfm_resume_after() == 0
+        assert await store.lastfm_account() == "someone_else"
+    finally:
+        await store.close()

@@ -188,6 +188,7 @@ class LastfmImporter:
         page_number = 1
         total_pages = 1
         swept_fully = False
+        newest_fetched = 0
         while page_number <= total_pages:
             try:
                 page = await self.fetch_recent(page_number, from_ts=resume_from)
@@ -217,6 +218,9 @@ class LastfmImporter:
             result["rows_read"] += page.raw_count
             result["rows_skipped"] += page.raw_count - len(page.listens)
             if page.listens:
+                newest_fetched = max(
+                    newest_fetched, max(listen.played_at for listen in page.listens)
+                )
                 batch_result = await store.add_listens(list(page.listens), listener=listener)
                 result["rows_imported"] += batch_result["rows_imported"]
                 result["rows_duplicate"] += batch_result["rows_duplicate"]
@@ -240,6 +244,11 @@ class LastfmImporter:
             # the `while` condition went false on its own (no `break` above) - the sweep ran
             # all the way to the last page without an unresolved failure or an artificial cap
             swept_fully = True
+        if swept_fully and newest_fetched:
+            # only after a clean run: pages come newest first, so a run that stopped part-way
+            # has NOT stored everything up to its newest play, and resuming from there would
+            # skip the pages it never reached
+            await store.set_lastfm_resume_after(newest_fetched)
         if not backfilled and swept_fully:
             await store.mark_lastfm_backfill_done()
             LOGGER.info("Last.fm full-history backfill complete for %s", self._username)
@@ -299,12 +308,26 @@ class LastfmImporter:
         raise LastfmApiError(describe_fetch_error(last_err)) from last_err
 
     async def _resume_timestamp(self, store: GenomeStoreProtocol, listener: str) -> int:
-        """Return the newest stored Last.fm ``played_at`` for ``listener``, or ``0``."""
-        latest = 0
-        async for listen in store.iter_listens(listener):
-            if listen.source == SOURCE_LASTFM and listen.played_at > latest:
-                latest = listen.played_at
-        return latest
+        """
+        Return where an incremental import resumes: one second past the last CLEAN run's newest.
+
+        The store's resume mark is written only when a run reaches its last page. A run that
+        stopped part-way (a page failed after its retries, or ``max_pages`` cut it short) has
+        stored the newest page - pages come newest first - but not the older ones, so resuming
+        from the newest stored row would skip those for good. Resuming from the mark fetches
+        them again; the pages it already stored are absorbed by the dedupe key.
+
+        No mark yet (a database from before 2c): the newest stored Last.fm row, as before.
+
+        One second past it: whether Last.fm's ``from`` includes plays AT that second is not
+        documented, and if it does, the newest play would be fetched again on every poll and -
+        once duplicate removal had deleted it - re-added every time. Two plays in the same
+        second cannot happen, so +1 costs nothing.
+        """
+        newest = await store.lastfm_resume_after()
+        if not newest:
+            newest = await store.latest_played_at(listener, SOURCE_LASTFM)
+        return newest + 1 if newest else 0
 
     def _parse_page(self, data: Any) -> LastfmPage:
         """Convert a raw ``user.getRecentTracks`` JSON payload into a :class:`LastfmPage`."""

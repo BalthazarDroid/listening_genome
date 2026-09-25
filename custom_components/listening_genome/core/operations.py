@@ -15,12 +15,17 @@ talking to MusicBrainz for nothing; the next hourly run picks up whatever is lef
 from __future__ import annotations
 
 import asyncio
+import csv
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..enrich.listenbrainz import artist_popularity
 from ..enrich.musicbrainz import MusicBrainzPassReport, run_musicbrainz_pass
+from ..importers.apple_csv import ApplePlayActivityStats, parse_play_activity
+from ..importers.apple_csv import _open_csv as open_csv
+from ..importers.apple_daily_tracks import is_daily_tracks_header, parse_daily_tracks
+from ..importers.lastfm import LastfmImporter
 from .constants import (
     GENOME_ENRICHMENT_BATCH_LIMIT,
     GENOME_MB_ENRICHMENT_MIN_INTERVAL_SECONDS,
@@ -32,13 +37,27 @@ from .constants import (
     RESOLVE_STATE_PENDING,
 )
 from .http import describe_http_error
-from .jobs import JOB_ENRICHMENT, JOB_REBUILD
+from .jobs import (
+    JOB_APPLE_IMPORT,
+    JOB_DUPLICATES,
+    JOB_ENRICHMENT,
+    JOB_LASTFM_IMPORT,
+    JOB_REBUILD,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from .http import HttpClient
     from .jobs import JobTracker
-    from .models import GenomeRebuildResult, GenomeResult
+    from .live import CapturedListen
+    from .models import GenomeImportResult, GenomeRebuildResult, GenomeResult, Listen
     from .service import GenomeService
+    from .store import DuplicateRemoval
+
+
+# see GenomeOperations._already_captured
+_SAME_PLAY_WINDOW_SECONDS = 120
 
 
 @dataclass(slots=True)
@@ -103,6 +122,7 @@ class GenomeOperations:
         *,
         musicbrainz_client: HttpClient,
         listenbrainz_client: HttpClient,
+        lastfm_client: HttpClient | None = None,
         enrichment_limit: int = GENOME_ENRICHMENT_BATCH_LIMIT,
         enrichment_min_interval_seconds: float = GENOME_MB_ENRICHMENT_MIN_INTERVAL_SECONDS,
     ) -> None:
@@ -113,6 +133,7 @@ class GenomeOperations:
         :param jobs: Where every run's outcome is recorded.
         :param musicbrainz_client: Throttled, identified client for musicbrainz.org.
         :param listenbrainz_client: Throttled, identified client for api.listenbrainz.org.
+        :param lastfm_client: Identified client for ws.audioscrobbler.com (Last.fm imports).
         :param enrichment_limit: Per-pass ceiling, for MusicBrainz and separately for the
             popularity backlog (the fork's ``GENOME_ENRICHMENT_BATCH_LIMIT``, 500).
         :param enrichment_min_interval_seconds: Spacing between artists' MusicBrainz lookups
@@ -123,9 +144,14 @@ class GenomeOperations:
         self.jobs = jobs
         self.musicbrainz_client = musicbrainz_client
         self.listenbrainz_client = listenbrainz_client
+        self.lastfm_client = lastfm_client
         self.enrichment_limit = enrichment_limit
         self.enrichment_min_interval_seconds = enrichment_min_interval_seconds
         self._enrichment_lock = asyncio.Lock()
+        # one Last.fm import at a time: a scheduled poll landing on a manual import would page
+        # through the same history twice
+        self._lastfm_lock = asyncio.Lock()
+        self._apple_lock = asyncio.Lock()
 
     @property
     def enrichment_running(self) -> bool:
@@ -208,6 +234,182 @@ class GenomeOperations:
             await self.jobs.finish(JOB_ENRICHMENT, summary)
             return report
 
+    # --- imports (2c) -----------------------------------------------------------------------
+
+    @property
+    def lastfm_import_running(self) -> bool:
+        """Return whether a Last.fm import (manual or scheduled) is in progress."""
+        return self._lastfm_lock.locked()
+
+    async def import_lastfm(
+        self, username: str, api_key: str, *, max_pages: int = 0
+    ) -> GenomeImportResult | None:
+        """
+        Fetch new Last.fm scrobbles, store them, and drop the ones already recorded elsewhere.
+
+        The first run sweeps the whole history; later runs fetch only what is new (see
+        :meth:`LastfmImporter.import_since`). Recorded as the ``lastfm_import`` job. Returns
+        ``None`` without doing anything when another Last.fm import is already running.
+        Raises what the import raised, after recording it - the API key is never in the text.
+        """
+        if self.lastfm_client is None:
+            msg = "No Last.fm client configured"
+            raise RuntimeError(msg)
+        if self._lastfm_lock.locked():
+            LOGGER.info("Last.fm import skipped: the previous one is still running")
+            return None
+        async with self._lastfm_lock:
+            await self.jobs.start(JOB_LASTFM_IMPORT, f"Importing scrobbles for {username}...")
+            importer = LastfmImporter(self.lastfm_client, username, api_key)
+            try:
+                if await self.store.use_lastfm_account(username):
+                    LOGGER.info(
+                        "Last.fm account changed to %s: importing its whole history", username
+                    )
+                added_after = await self.store.max_listen_id()
+                result = await importer.import_since(
+                    self.store, listener=LISTENER_HOUSEHOLD, max_pages=max_pages
+                )
+                removed = await self._remove_duplicates_after(result, added_after)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                message = f"Last.fm import failed: {err}"
+                await self.jobs.fail(JOB_LASTFM_IMPORT, message)
+                LOGGER.warning("%s", message)
+                raise
+            message = import_summary("Last.fm import", result, removed)
+            await self.jobs.finish(JOB_LASTFM_IMPORT, message)
+            LOGGER.info("%s", message)
+            return result
+
+    async def import_apple(self, path: str, *, display_name: str) -> GenomeImportResult:
+        """
+        Parse an Apple Music export CSV at ``path``, store it, and drop Last.fm doubles of it.
+
+        Either Apple file works: the header decides between the "Play History Daily Tracks"
+        parser (the one with artists) and the older "Play Activity" one. Recorded as the
+        ``apple_import`` job; raises what the import raised, after recording it.
+
+        :param path: The CSV on disk (an HA upload's temporary file, or a file under /config).
+        :param display_name: What to call it in messages (the original file name).
+        """
+        async with self._apple_lock:
+            await self.jobs.start(JOB_APPLE_IMPORT, f"Importing {display_name}...")
+            try:
+                added_after = await self.store.max_listen_id()
+                result = await self._ingest_apple_csv(path)
+                removed = await self._remove_duplicates_after(result, added_after)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                message = f"Apple Music import of {display_name} failed: {err}"
+                await self.jobs.fail(JOB_APPLE_IMPORT, message)
+                LOGGER.warning("%s", message)
+                raise
+            message = import_summary(f"Apple Music import of {display_name}", result, removed)
+            await self.jobs.finish(JOB_APPLE_IMPORT, message)
+            LOGGER.info("%s", message)
+            for warning in result["warnings"]:
+                LOGGER.warning("Apple Music import: %s", warning)
+            return result
+
+    async def record_live(self, captured: Sequence[CapturedListen]) -> int:
+        """
+        Store plays captured live from Music Assistant; return how many were new.
+
+        Grouped by MA user, since the store attributes a batch to one user. Then the Last.fm
+        rows those plays make redundant (MA's own scrobbles of them) are removed - normally
+        none yet, as the scrobble arrives with a later poll, which removes it then.
+        """
+        added_after = await self.store.max_listen_id()
+        by_user: dict[str | None, list[Listen]] = {}
+        for item in captured:
+            if await self._already_captured(item.listen):
+                continue
+            by_user.setdefault(item.userid, []).append(item.listen)
+        added = 0
+        for userid, listens in by_user.items():
+            result = await self.store.add_listens(
+                listens, listener=LISTENER_HOUSEHOLD, ma_userid=userid
+            )
+            added += result["rows_imported"]
+        if added:
+            played = [item.listen.played_at for item in captured]
+            await self.store.remove_duplicate_listens(
+                LISTENER_HOUSEHOLD, since=min(played), until=max(played), added_after_id=added_after
+            )
+        return added
+
+    async def _already_captured(self, listen: Listen) -> bool:
+        """
+        Whether this play was already written by a capture that stopped part-way through it.
+
+        A reload (saving the settings) or a restart mid-track writes what was heard so far;
+        the new capture then picks the same play up and computes its start again from the
+        progress MA reports - usually the same minute, which the store's dedupe key absorbs,
+        but a second of jitter across a minute boundary would slip through. A live row for the
+        same track starting within half the track's length (at most two minutes) is that play.
+        """
+        half = (listen.duration_ms or 240_000) // 2000
+        window = min(_SAME_PLAY_WINDOW_SECONDS, half)
+        return await self.store.has_live_listen_near(
+            LISTENER_HOUSEHOLD, listen.artist_key, listen.track_key, listen.played_at, window
+        )
+
+    async def remove_duplicates_once(self) -> DuplicateRemoval | None:
+        """
+        The one-time whole-history duplicate removal; ``None`` if it has already run.
+
+        Recorded as the ``duplicates`` job. Imports afterwards clean their own time range.
+        """
+        if await self.store.duplicate_cleanup_done():
+            return None
+        before = await self.store.count_listens(LISTENER_HOUSEHOLD)
+        await self.jobs.start(JOB_DUPLICATES, "Removing plays recorded twice...")
+        try:
+            removed = await self.store.remove_duplicate_listens(LISTENER_HOUSEHOLD)
+        except Exception as err:
+            await self.jobs.fail(JOB_DUPLICATES, f"Duplicate removal failed: {err}")
+            raise
+        await self.store.mark_duplicate_cleanup_done()
+        after = await self.store.count_listens(LISTENER_HOUSEHOLD)
+        message = (
+            f"Removed {removed.total} Last.fm plays already recorded by another source "
+            f"({removed.apple} by Apple Music the same day, {removed.music_assistant} by Music "
+            f"Assistant); {before} listens before, {after} after"
+        )
+        await self.jobs.finish(JOB_DUPLICATES, message)
+        LOGGER.warning("Listening Genome one-time cleanup: %s", message)
+        return removed
+
+    async def _remove_duplicates_after(
+        self, result: GenomeImportResult, added_after_id: int
+    ) -> DuplicateRemoval | None:
+        """Clean the days an import touched (nothing to do when it added nothing)."""
+        first, last = result["first_played_at"], result["last_played_at"]
+        if not result["rows_imported"] or first is None or last is None:
+            return None
+        return await self.store.remove_duplicate_listens(
+            LISTENER_HOUSEHOLD, since=first, until=last, added_after_id=added_after_id
+        )
+
+    async def _ingest_apple_csv(self, path: str) -> GenomeImportResult:
+        """Parse with whichever Apple parser the header calls for, then store the listens."""
+        min_seconds = self.service.settings.min_seconds_played
+        headers = await asyncio.to_thread(read_csv_header, path)
+        parser = parse_daily_tracks if is_daily_tracks_header(headers) else parse_play_activity
+        stats = ApplePlayActivityStats()
+        listens = [listen async for listen in parser(path, min_seconds=min_seconds, stats=stats)]
+        result = await self.store.add_listens(listens, listener=LISTENER_HOUSEHOLD)
+        # the parser's own tally is the truth for rows read and skipped: the store only ever
+        # sees the rows that survived parsing
+        result["rows_read"] = stats.rows_read
+        result["rows_skipped"] = stats.rows_skipped
+        stats.summarise()
+        result["warnings"] = list(stats.warnings)
+        return result
+
     def _musicbrainz_progress(self, done: int, total: int, report: MusicBrainzPassReport) -> None:
         """In-memory progress for the panel. Never writes the database (see ``jobs.py``)."""
         self.jobs.update(
@@ -278,4 +480,35 @@ class GenomeOperations:
         return report
 
 
-__all__ = ["EnrichmentReport", "GenomeOperations", "PopularityReport"]
+def read_csv_header(path: str) -> list[str]:
+    """Read only the header row of a CSV (blocking; run it in a thread)."""
+    with open_csv(path) as csv_file:
+        return list(next(csv.reader(csv_file), []))
+
+
+def import_summary(
+    label: str, result: GenomeImportResult, removed: DuplicateRemoval | None = None
+) -> str:
+    """
+    Render an import as the one sentence a person needs to read (the fork's wording).
+
+    This text is the whole outcome once the request that started the import is gone, so it
+    carries the counts and any warnings rather than "import finished".
+    """
+    summary = (
+        f"{label} finished: {result['rows_imported']} imported, "
+        f"{result['rows_skipped']} skipped, {result['rows_duplicate']} duplicate "
+        f"(of {result['rows_read']} rows read)"
+    )
+    if removed is not None and removed.total:
+        summary += (
+            f"; {removed.total} Last.fm plays removed as already recorded "
+            f"({removed.apple} by Apple Music, {removed.music_assistant} by Music Assistant)"
+        )
+    warnings = list(result.get("warnings") or ())
+    if warnings:
+        summary += ". Warnings: " + "; ".join(warnings)
+    return summary
+
+
+__all__ = ["EnrichmentReport", "GenomeOperations", "PopularityReport", "import_summary"]

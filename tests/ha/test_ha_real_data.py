@@ -9,6 +9,7 @@ first enrichment pass would pick up is printed instead. Run with ``-s`` to see t
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import shutil
@@ -74,6 +75,10 @@ async def test_real_database(
     await hass.async_block_till_done()
     runtime = genome_entry.runtime_data
     _report(hass, "After setup (the cached genome):")
+    await asyncio.gather(*runtime._tasks)  # the one-time duplicate cleanup and its rebuild
+    await hass.async_block_till_done()
+    print(f"  duplicates job: {runtime.jobs.get('duplicates')['message']}")
+    _report(hass, "After the one-time duplicate cleanup and its rebuild:")
     print(f"  jobs after load: { {k: v['state'] for k, v in runtime.jobs.get_all().items()} }")
     raw = await runtime.store.count_listens("household")
     eligible = await runtime.store.count_eligible_listens("household", min_seconds_played=30)

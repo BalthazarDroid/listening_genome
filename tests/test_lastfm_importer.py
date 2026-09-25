@@ -421,3 +421,83 @@ async def test_page_one_failure_still_raises_in_backfill_mode(tmp_path: Path) ->
         assert await store.lastfm_backfill_done() is False
     finally:
         await store.close()
+
+
+async def test_incremental_resume_survives_duplicate_removal(tmp_path: Path) -> None:
+    """
+    Deleting the newest Last.fm row (as a duplicate) must not move the resume point back.
+
+    Without the stored mark, the next poll resumes from the previous row, fetches the deleted
+    one again and re-adds it - every hour, forever.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        first = _ScriptedHttpClient(
+            {1: [_lastfm_payload(page=1, total_pages=1, n_tracks=3, start_uts=10_000)]}
+        )
+        await LastfmImporter(first, "testuser", "fake-key").import_since(
+            store, listener="household"
+        )
+        assert await store.lastfm_backfill_done() is True
+        # the newest row (uts 10_002) is removed, as duplicate removal would
+        await store.database.execute("DELETE FROM genome_listens WHERE played_at = 10002")
+        await store.database.commit()
+        second = _ScriptedHttpClient(
+            {1: [_lastfm_payload(page=1, total_pages=1, n_tracks=0, start_uts=0)]}
+        )
+        await LastfmImporter(second, "testuser", "fake-key").import_since(
+            store, listener="household"
+        )
+        assert second.calls[0]["from"] == "10003"
+    finally:
+        await store.close()
+
+
+async def test_partial_run_does_not_advance_the_resume_mark(tmp_path: Path) -> None:
+    """A run that stopped part-way must not claim everything up to its newest play is in."""
+    store = await _new_store(tmp_path)
+    try:
+        await store.mark_lastfm_backfill_done()
+        client = _ScriptedHttpClient(
+            {
+                1: [_lastfm_payload(page=1, total_pages=2, n_tracks=2, start_uts=50_000)],
+                2: [_StatusError(404)],
+            }
+        )
+        await LastfmImporter(client, "testuser", "fake-key").import_since(
+            store, listener="household"
+        )
+        assert await store.lastfm_resume_after() == 0
+    finally:
+        await store.close()
+
+
+async def test_the_run_after_a_partial_one_fetches_the_pages_it_missed(tmp_path: Path) -> None:
+    """
+    Page 1 (newest) stored, page 2 failed: the next run must still reach page 2's plays.
+
+    Resuming from the newest STORED row would start after page 1 and skip page 2 for good.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        await store.mark_lastfm_backfill_done()
+        await store.set_lastfm_resume_after(40_000)
+        partial = _ScriptedHttpClient(
+            {
+                1: [_lastfm_payload(page=1, total_pages=2, n_tracks=2, start_uts=50_000)],
+                2: [_StatusError(404)],
+            }
+        )
+        await LastfmImporter(partial, "testuser", "fake-key").import_since(
+            store, listener="household"
+        )
+        assert await store.latest_played_at("household", "lastfm") == 50_001
+        after = _ScriptedHttpClient(
+            {1: [_lastfm_payload(page=1, total_pages=1, n_tracks=0, start_uts=0)]}
+        )
+        await LastfmImporter(after, "testuser", "fake-key").import_since(
+            store, listener="household"
+        )
+        assert after.calls[0]["from"] == "40001"
+    finally:
+        await store.close()

@@ -162,7 +162,13 @@ async def test_ws_jobs(
     await client.send_json_auto_id({"type": "listening_genome/jobs"})
     msg = await client.receive_json()
     assert msg["success"], msg
-    assert set(msg["result"]) == {"rebuild", "enrichment"}
+    assert set(msg["result"]) == {
+        "rebuild",
+        "enrichment",
+        "lastfm_import",
+        "apple_import",
+        "duplicates",
+    }
     # setup rebuilt (no cache yet), and that is recorded
     assert msg["result"]["rebuild"]["state"] == "ok"
     assert msg["result"]["rebuild"]["message"].startswith("Rebuilt from 4 stored listens")

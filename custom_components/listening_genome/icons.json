@@ -1,0 +1,10 @@
+{
+  "services": {
+    "import_lastfm": {
+      "service": "mdi:history"
+    },
+    "import_apple_csv": {
+      "service": "mdi:file-music"
+    }
+  }
+}

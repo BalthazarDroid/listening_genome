@@ -3,9 +3,25 @@
 A listening-taste profile for Home Assistant, built from Music Assistant history, Last.fm and an
 Apple Music export.
 
-> **Status: phase 1 of 4.** The analysis core is here and tested. The Home Assistant integration
-> itself — config flow, websocket API, sidebar panel, sensors — is not written yet, so installing
-> this in HA does nothing useful so far.
+> **Status: phase 2 of 4.** The integration installs through HACS, keeps its history current and
+> publishes sensors. The sidebar panel (phase 3) is not written yet: imports are started from
+> *Developer tools → Actions* for now.
+
+## What it does
+
+- **Live capture.** Opens its own session to the Music Assistant server the MA integration points
+  at, and records every track played — one listen per play, with the room it played in. The
+  *Music Assistant connection* diagnostic sensor says whether it is connected and what it last
+  recorded.
+- **Last.fm.** With a username and API key in the settings, imports the whole scrobble history
+  once, then fetches new scrobbles every hour (configurable).
+- **Apple Music.** Imports *Apple Music - Play History Daily Tracks.csv* from an Apple data export
+  (action `listening_genome.import_apple_csv`, or an upload over the websocket API).
+- **No double counting.** A Last.fm scrobble of a play Apple's export or Music Assistant already
+  recorded is removed — once over the whole history, then after every import.
+- **Keeps itself current.** Rebuilds daily at 04:00, looks new artists up on MusicBrainz and
+  ListenBrainz hourly, and has a *Rebuild now* button.
+- **Sensors:** obscurity index, divergence, top artist, listens stored, last rebuild.
 
 ## What is here
 
@@ -17,7 +33,8 @@ Apple Music export.
 | `custom_components/listening_genome/baseline/` | The reference distribution everything is compared against |
 | `custom_components/listening_genome/compat.py` | Helpers vendored from Music Assistant — see below |
 | `scripts/build_genome_baseline.py` | Rebuilds the baseline from ListenBrainz |
-| `tests/` | 180 tests |
+| `custom_components/listening_genome/*.py` | The Home Assistant side: setup, schedules, live capture, settings, sensors, actions, websocket API |
+| `tests/` | 340+ tests; `tests/ha/` runs the integration inside a real Home Assistant core |
 
 ## About `compat.py`
 

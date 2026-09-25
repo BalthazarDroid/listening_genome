@@ -10,8 +10,8 @@ database exported from the fork carries its job history across), and serves read
 
 Differences from the fork, each deliberate:
 
-* The jobs are this integration's own: ``rebuild`` and ``enrichment``. The fork's
-  ``lastfm_import`` and ``apple_import`` ids are kept as known ids for slice 2c. The fork's
+* The jobs are this integration's own: ``rebuild``, ``enrichment``, the fork's
+  ``lastfm_import`` and ``apple_import`` (same ids), and ``duplicates``. The fork's
   ``export_db`` is retired: the fork recorded that job as ``running`` *inside the very snapshot
   it was writing*, so every exported database carries an ``export_db`` that looks interrupted
   but in fact finished. Restoring it would greet the user with a false "interrupted" warning.
@@ -37,15 +37,23 @@ if TYPE_CHECKING:
 # job ids: the keys of the `listening_genome/jobs` payload, part of the panel's contract
 JOB_REBUILD = "rebuild"
 JOB_ENRICHMENT = "enrichment"
-# the fork's import jobs, which return with slice 2c; restored from a fork database as-is
+# the fork's import jobs (same ids, so a fork database's last results carry across)
 JOB_LASTFM_IMPORT = "lastfm_import"
 JOB_APPLE_IMPORT = "apple_import"
+# 2c's duplicate removal: once over the whole history, then after every import
+JOB_DUPLICATES = "duplicates"
 
 #: the jobs this integration runs, in the order a UI shows them; each always has a state
-ALL_JOBS: tuple[str, ...] = (JOB_REBUILD, JOB_ENRICHMENT)
+ALL_JOBS: tuple[str, ...] = (
+    JOB_REBUILD,
+    JOB_ENRICHMENT,
+    JOB_LASTFM_IMPORT,
+    JOB_APPLE_IMPORT,
+    JOB_DUPLICATES,
+)
 
 #: every job id :meth:`JobTracker.load` restores; anything else in the stored map is dropped
-KNOWN_JOBS: frozenset[str] = frozenset({*ALL_JOBS, JOB_LASTFM_IMPORT, JOB_APPLE_IMPORT})
+KNOWN_JOBS: frozenset[str] = frozenset(ALL_JOBS)
 
 JOB_STATE_IDLE = "idle"
 JOB_STATE_RUNNING = "running"

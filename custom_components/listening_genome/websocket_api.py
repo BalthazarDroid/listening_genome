@@ -20,12 +20,17 @@ from .const import (
     DOMAIN,
     WS_TYPE_DISMISS_UNRESOLVED,
     WS_TYPE_GET,
+    WS_TYPE_IMPORT_APPLE,
+    WS_TYPE_IMPORT_LASTFM,
     WS_TYPE_JOBS,
+    WS_TYPE_LIVE,
     WS_TYPE_REBUILD,
     WS_TYPE_RETRY_ARTISTS,
     WS_TYPE_UNRESOLVED_ARTISTS,
 )
 from .core.constants import LOGGER
+from .core.jobs import JOB_APPLE_IMPORT, JOB_LASTFM_IMPORT
+from .uploads import UploadError, async_take_upload
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -33,6 +38,9 @@ if TYPE_CHECKING:
     from .runtime import ListeningGenomeData
 
 ERR_REBUILD_FAILED = "rebuild_failed"
+ERR_NOT_CONFIGURED = "not_configured"
+ERR_ALREADY_RUNNING = "already_running"
+ERR_UPLOAD = "upload_failed"
 
 
 @callback
@@ -45,6 +53,9 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
         ws_unresolved_artists,
         ws_retry_artists,
         ws_dismiss_unresolved,
+        ws_import_lastfm,
+        ws_import_apple,
+        ws_live,
     ):
         websocket_api.async_register_command(hass, command)
 
@@ -169,3 +180,77 @@ async def ws_dismiss_unresolved(
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     connection.send_result(msg["id"], await runtime.service.dismiss_unresolved())
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_TYPE_IMPORT_LASTFM,
+        vol.Optional("max_pages", default=0): vol.All(int, vol.Range(min=0)),
+    }
+)
+@websocket_api.require_admin
+@callback
+def ws_import_lastfm(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """
+    Start a Last.fm import now, with the account from the settings; return the job's state.
+
+    The import runs in the background (the first one sweeps the whole history - minutes); its
+    outcome is the ``lastfm_import`` job. Rebuilds afterwards when it added anything.
+    """
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    if not runtime.settings.lastfm_configured:
+        connection.send_error(
+            msg["id"],
+            ERR_NOT_CONFIGURED,
+            "Last.fm is not set up: add the username and API key in the integration's settings",
+        )
+        return
+    if not runtime.async_request_lastfm_import(max_pages=msg["max_pages"], rebuild=True):
+        connection.send_error(msg["id"], ERR_ALREADY_RUNNING, "A Last.fm import is already running")
+        return
+    connection.send_result(msg["id"], runtime.jobs.get(JOB_LASTFM_IMPORT))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_TYPE_IMPORT_APPLE,
+        vol.Required("file_id"): str,
+        vol.Optional("filename", default=""): str,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_import_apple(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """
+    Import an Apple Music export uploaded through Home Assistant's ``/api/file_upload``.
+
+    The upload is copied out of Home Assistant's temporary upload area straight away (that area
+    is emptied when the request ends), then imported in the background; the outcome is the
+    ``apple_import`` job, which this returns in its starting state.
+    """
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    display_name = msg["filename"] or "the uploaded file"
+    try:
+        path = await async_take_upload(hass, msg["file_id"])
+    except UploadError as err:
+        connection.send_error(msg["id"], ERR_UPLOAD, str(err))
+        return
+    runtime.async_request_apple_import(path, display_name, cleanup=True)
+    connection.send_result(msg["id"], runtime.jobs.get(JOB_APPLE_IMPORT))
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_TYPE_LIVE})
+@callback
+def ws_live(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return the live-capture connection status (memory only)."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    connection.send_result(msg["id"], runtime.capture.status.as_dict())

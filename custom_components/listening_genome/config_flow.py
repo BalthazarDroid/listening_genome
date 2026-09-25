@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, OptionsFlow
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import section
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     BooleanSelector,
     NumberSelector,
@@ -16,21 +19,36 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
 )
+from homeassistant.loader import async_get_integration
 
 from .const import CONF_MA_ENTRY_ID, DEVICE_NAME, DOMAIN, MA_DOMAIN
 from .core.constants import (
     CONF_ENRICH_ENABLED,
+    CONF_LASTFM_API_KEY,
+    CONF_LASTFM_POLL_ENABLED,
+    CONF_LASTFM_POLL_INTERVAL_HOURS,
+    CONF_LASTFM_USERNAME,
     CONF_MIN_SECONDS_PLAYED,
     CONF_OBSCURITY_PERCENTILE,
     CONF_REBUILD_SCHEDULE_HOUR,
     CONF_RECENCY_HALF_LIFE_DAYS,
     HALF_LIFE_DAYS_RANGE,
+    LASTFM_API_KEY_PATTERN,
+    LASTFM_POLL_INTERVAL_HOURS_RANGE,
+    LASTFM_RATE_LIMIT,
+    LASTFM_RATE_PERIOD_SECONDS,
     MIN_SECONDS_PLAYED_RANGE,
     OBSCURITY_PERCENTILE_CHOICES,
     REBUILD_SCHEDULE_HOUR_RANGE,
 )
+from .core.errors import LastfmApiError
+from .core.http import AiohttpClient, user_agent
 from .core.service import GenomeServiceSettings
+from .importers.lastfm import LastfmImporter, describe_fetch_error
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -141,8 +159,17 @@ def _int_in(bounds: tuple[int, int]) -> vol.All:
     )
 
 
+# the options form's Last.fm group; stored flat, next to the other settings
+SECTION_LASTFM = "lastfm"
+
+
 def _options_schema(current: GenomeServiceSettings) -> vol.Schema:
-    """The settings form, prefilled with the current values (the fork's defaults if unset)."""
+    """
+    The settings form, prefilled with the current values (the fork's defaults if unset).
+
+    The Last.fm API key is never sent back to the browser: the field is always empty, and
+    leaving it empty keeps the stored key.
+    """
     return vol.Schema(
         {
             vol.Required(CONF_RECENCY_HALF_LIFE_DAYS, default=current.half_life_days): _int_in(
@@ -165,32 +192,121 @@ def _options_schema(current: GenomeServiceSettings) -> vol.Schema:
                 CONF_REBUILD_SCHEDULE_HOUR, default=current.rebuild_schedule_hour
             ): _int_in(REBUILD_SCHEDULE_HOUR_RANGE),
             vol.Required(CONF_ENRICH_ENABLED, default=current.enrich_enabled): BooleanSelector(),
+            vol.Required(SECTION_LASTFM): section(
+                vol.Schema(
+                    {
+                        vol.Optional(
+                            CONF_LASTFM_USERNAME, default=current.lastfm_username
+                        ): TextSelector(),
+                        vol.Optional(CONF_LASTFM_API_KEY, default=""): TextSelector(
+                            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                        ),
+                        vol.Required(
+                            CONF_LASTFM_POLL_ENABLED, default=current.lastfm_poll_enabled
+                        ): BooleanSelector(),
+                        vol.Required(
+                            CONF_LASTFM_POLL_INTERVAL_HOURS,
+                            default=current.lastfm_poll_interval_hours,
+                        ): _int_in(LASTFM_POLL_INTERVAL_HOURS_RANGE),
+                    }
+                ),
+                {"collapsed": not current.lastfm_configured},
+            ),
         }
     )
 
 
 class ListeningGenomeOptionsFlow(OptionsFlow):
     """
-    The settings screen: the fork's engine and schedule settings (Last.fm arrives in 2c).
+    The settings screen: the fork's engine and schedule settings, and Last.fm.
 
     Saving reloads the entry (see ``_async_options_updated``), which re-registers the schedules
     and rebuilds when a setting the genome depends on changed.
     """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Show the settings form; save what the schema has already validated."""
-        if user_input is not None:
-            return self.async_create_entry(data=_to_options(user_input))
+        """Show the settings form; check new Last.fm credentials with Last.fm before saving."""
         current = GenomeServiceSettings.from_options(self.config_entry.options)
-        return self.async_show_form(step_id="init", data_schema=_options_schema(current))
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {"reason": ""}
+        if user_input is not None:
+            options = _to_options(user_input, current)
+            error = _lastfm_form_error(options)
+            if error is None and _lastfm_changed(options, current) and options[CONF_LASTFM_API_KEY]:
+                reason = await self._check_lastfm(
+                    options[CONF_LASTFM_USERNAME], options[CONF_LASTFM_API_KEY]
+                )
+                if reason is not None:
+                    error = "lastfm_rejected"
+                    placeholders["reason"] = reason
+            if error is None:
+                return self.async_create_entry(data=options)
+            errors["base"] = error
+        return self.async_show_form(
+            step_id="init",
+            data_schema=_options_schema(current),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
+
+    async def _check_lastfm(self, username: str, api_key: str) -> str | None:
+        """Ask Last.fm for one scrobble; return why it refused, or ``None`` if it answered."""
+        integration = await async_get_integration(self.hass, DOMAIN)
+        client = AiohttpClient(
+            async_get_clientsession(self.hass),
+            rate_limit=LASTFM_RATE_LIMIT,
+            period=LASTFM_RATE_PERIOD_SECONDS,
+            user_agent=user_agent(str(integration.version)),
+        )
+        try:
+            await LastfmImporter(client, username, api_key).fetch_recent(1, limit=1)
+        except LastfmApiError as err:
+            return str(err)
+        except Exception as err:  # network trouble: say so without echoing the request URL
+            return describe_fetch_error(err)
+        return None
 
 
-def _to_options(user_input: Mapping[str, Any]) -> dict[str, Any]:
-    """Store every setting with its real type (the percentile arrives as a select string)."""
+def _to_options(user_input: Mapping[str, Any], current: GenomeServiceSettings) -> dict[str, Any]:
+    """
+    Store every setting flat, with its real type (the percentile arrives as a select string).
+
+    An empty API key field keeps the stored key; clearing the username clears both.
+    """
+    lastfm = user_input.get(SECTION_LASTFM) or {}
+    username = str(lastfm.get(CONF_LASTFM_USERNAME) or "").strip()
+    api_key = str(lastfm.get(CONF_LASTFM_API_KEY) or "").strip() or current.lastfm_api_key
+    if not username:
+        api_key = ""
     return {
         CONF_RECENCY_HALF_LIFE_DAYS: int(user_input[CONF_RECENCY_HALF_LIFE_DAYS]),
         CONF_OBSCURITY_PERCENTILE: int(user_input[CONF_OBSCURITY_PERCENTILE]),
         CONF_MIN_SECONDS_PLAYED: int(user_input[CONF_MIN_SECONDS_PLAYED]),
         CONF_REBUILD_SCHEDULE_HOUR: int(user_input[CONF_REBUILD_SCHEDULE_HOUR]),
         CONF_ENRICH_ENABLED: bool(user_input[CONF_ENRICH_ENABLED]),
+        CONF_LASTFM_USERNAME: username,
+        CONF_LASTFM_API_KEY: api_key,
+        CONF_LASTFM_POLL_ENABLED: bool(lastfm.get(CONF_LASTFM_POLL_ENABLED, False)),
+        CONF_LASTFM_POLL_INTERVAL_HOURS: int(
+            lastfm.get(CONF_LASTFM_POLL_INTERVAL_HOURS) or current.lastfm_poll_interval_hours
+        ),
     }
+
+
+def _lastfm_form_error(options: Mapping[str, Any]) -> str | None:
+    """A problem the form itself can see, without asking Last.fm; the key is never echoed."""
+    api_key = options[CONF_LASTFM_API_KEY]
+    if api_key and not re.match(LASTFM_API_KEY_PATTERN, api_key):
+        return "lastfm_key_format"
+    if options[CONF_LASTFM_USERNAME] and not api_key:
+        return "lastfm_key_missing"
+    if options[CONF_LASTFM_POLL_ENABLED] and not options[CONF_LASTFM_USERNAME]:
+        return "lastfm_poll_needs_account"
+    return None
+
+
+def _lastfm_changed(options: Mapping[str, Any], current: GenomeServiceSettings) -> bool:
+    return (
+        options[CONF_LASTFM_USERNAME] != current.lastfm_username
+        or options[CONF_LASTFM_API_KEY] != current.lastfm_api_key
+    )

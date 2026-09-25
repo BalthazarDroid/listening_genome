@@ -18,8 +18,10 @@ through the same private helper.
 
 from __future__ import annotations
 
+import bisect
 import os
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from ..compat import json_dumps, json_loads
@@ -40,6 +42,8 @@ from .constants import (
     RESOLVE_STATE_NOT_FOUND,
     RESOLVE_STATE_OK,
     RESOLVE_STATE_PENDING,
+    SOURCE_APPLE_EXPORT,
+    SOURCE_LASTFM,
     SOURCE_MA_BACKFILL,
     SOURCE_MA_PLAYLOG,
 )
@@ -86,6 +90,62 @@ _UNRESOLVED_DISMISSED_KEY = "unresolved_dismissed_keys"
 # row shape as the keys above - a long import's outcome has to outlive both the websocket
 # request that started it and the process that ran it, and this is where it is written down.
 _JOBS_KEY = "jobs"
+
+# settings-table key: the newest Last.fm scrobble timestamp any import has fetched. The resume
+# point used to be only "the newest Last.fm row stored", which moves BACKWARDS when duplicate
+# removal deletes that row - and the next poll would then fetch it again, re-add it, and delete
+# it again. Resume = max(this mark, newest stored row).
+_LASTFM_RESUME_KEY = "lastfm_resume_after"
+
+# settings-table key: the Last.fm username the backfill flag and resume mark belong to. Another
+# account starts again from its own beginning.
+_LASTFM_ACCOUNT_KEY = "lastfm_account"
+
+# settings-table key recording that the one-time duplicate cleanup (2c) has run over the whole
+# history. Imports after that clean only their own time range.
+_DUPLICATE_CLEANUP_DONE_KEY = "duplicate_cleanup_v1_done"
+
+# An MA scrobbler submits to Last.fm when the track is fully played, stamped with the time of
+# submission - so a Last.fm copy of a live-captured MA play lands roughly one track-length after
+# the MA row's start time, later still if the track was paused on the way. These bound that gap:
+# a little before the start (clock skew), up to the track's length plus an hour after it.
+_MA_SCROBBLE_EARLY_SECONDS = 120
+_MA_SCROBBLE_LATE_SLACK_SECONDS = 3600
+_MA_SCROBBLE_UNKNOWN_DURATION_SECONDS = 1800
+
+_SECONDS_PER_DAY = 86400
+
+
+# the shortest MA key a longer Last.fm key may merely start with ("a, b" credit, "(live)" suffix)
+_MIN_PREFIX_MATCH_LENGTH = 3
+
+
+def _key_matches(lastfm_key: str, ma_key: str) -> bool:
+    """Whether a Last.fm artist/track key names the same thing as an MA one."""
+    if lastfm_key == ma_key:
+        return True
+    # a whole-word prefix only: "artist a, artist b" matches "artist a", "queens of the stone
+    # age" does not match "queen"
+    return (
+        len(ma_key) >= _MIN_PREFIX_MATCH_LENGTH
+        and lastfm_key.startswith(ma_key)
+        and not lastfm_key[len(ma_key)].isalnum()
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateRemoval:
+    """How many Last.fm rows :meth:`GenomeStore.remove_duplicate_listens` deleted, and why."""
+
+    #: second copies of plays Apple Music's export already recorded that day
+    apple: int = 0
+    #: Music Assistant's own scrobbles of plays captured live
+    music_assistant: int = 0
+
+    @property
+    def total(self) -> int:
+        """All rows deleted."""
+        return self.apple + self.music_assistant
 
 
 class ArtistMetaWrite(TypedDict, total=False):
@@ -882,6 +942,259 @@ class GenomeStore:
             await self.database.commit()
         return deleted
 
+    async def latest_played_at(self, listener: str, source: str) -> int:
+        """Return the newest ``played_at`` stored for ``listener`` from ``source``, or ``0``."""
+        assert self.database is not None
+        rows = await self.database.get_rows_from_query(
+            f"SELECT MAX(played_at) AS latest FROM {DB_TABLE_GENOME_LISTENS} "
+            "WHERE listener = :listener AND source = :source",
+            {"listener": listener, "source": source},
+            limit=1,
+        )
+        latest = rows[0]["latest"] if rows else None
+        return int(latest) if latest is not None else 0
+
+    async def lastfm_resume_after(self) -> int:
+        """Return the newest Last.fm timestamp any import has fetched (``0`` if none recorded)."""
+        assert self.database is not None
+        row = await self.database.get_row(DB_TABLE_SETTINGS, {"key": _LASTFM_RESUME_KEY})
+        try:
+            return int(row["value"]) if row is not None else 0
+        except TypeError, ValueError:
+            return 0
+
+    async def set_lastfm_resume_after(self, timestamp: int) -> None:
+        """Advance the Last.fm resume mark to ``timestamp`` (never moves it backwards)."""
+        assert self.database is not None
+        if timestamp <= await self.lastfm_resume_after():
+            return
+        await self.database.insert_or_replace(
+            DB_TABLE_SETTINGS,
+            {"key": _LASTFM_RESUME_KEY, "value": str(int(timestamp)), "type": "str"},
+        )
+        await self.database.commit()
+
+    async def lastfm_account(self) -> str | None:
+        """The Last.fm username the stored import progress belongs to (``None``: not recorded)."""
+        assert self.database is not None
+        row = await self.database.get_row(DB_TABLE_SETTINGS, {"key": _LASTFM_ACCOUNT_KEY})
+        return str(row["value"]) if row is not None and row["value"] else None
+
+    async def use_lastfm_account(self, username: str) -> bool:
+        """
+        Make ``username`` the account the Last.fm import progress belongs to.
+
+        When a DIFFERENT account was recorded, its progress (the finished-backfill flag and the
+        resume mark) is forgotten, so the new account's history is swept from the start rather
+        than resumed from the old account's last scrobble. Listens already imported stay.
+        Returns whether progress was reset. A database with no account recorded (from the fork,
+        or before 2c) keeps its progress: it was made with the account now configured.
+        """
+        assert self.database is not None
+        current = await self.lastfm_account()
+        reset = current is not None and current.casefold() != username.casefold()
+        if reset:
+            await self.database.delete(DB_TABLE_SETTINGS, {"key": _LASTFM_BACKFILL_DONE_KEY})
+            await self.database.delete(DB_TABLE_SETTINGS, {"key": _LASTFM_RESUME_KEY})
+        if reset or current is None:
+            await self.database.insert_or_replace(
+                DB_TABLE_SETTINGS, {"key": _LASTFM_ACCOUNT_KEY, "value": username, "type": "str"}
+            )
+        await self.database.commit()
+        return reset
+
+    async def duplicate_cleanup_done(self) -> bool:
+        """Return whether the one-time whole-history duplicate cleanup has run."""
+        assert self.database is not None
+        row = await self.database.get_row(DB_TABLE_SETTINGS, {"key": _DUPLICATE_CLEANUP_DONE_KEY})
+        return row is not None and row["value"] == "1"
+
+    async def mark_duplicate_cleanup_done(self) -> None:
+        """Record that the one-time whole-history duplicate cleanup has run."""
+        assert self.database is not None
+        await self.database.insert_or_replace(
+            DB_TABLE_SETTINGS, {"key": _DUPLICATE_CLEANUP_DONE_KEY, "value": "1", "type": "str"}
+        )
+        await self.database.commit()
+
+    async def has_live_listen_near(
+        self, listener: str, artist_key: str, track_key: str, played_at: int, window: int
+    ) -> bool:
+        """Whether a live-captured row for this track starts within ``window`` s of ``played_at``."""
+        assert self.database is not None
+        rows = await self.database.get_rows_from_query(
+            f"SELECT id FROM {DB_TABLE_GENOME_LISTENS} "
+            f"WHERE listener = :listener AND source = '{SOURCE_MA_PLAYLOG}' "
+            "AND artist_key = :artist_key AND track_key = :track_key "
+            "AND played_at BETWEEN :lo AND :hi",
+            {
+                "listener": listener,
+                "artist_key": artist_key,
+                "track_key": track_key,
+                "lo": played_at - window,
+                "hi": played_at + window,
+            },
+            limit=1,
+        )
+        return bool(rows)
+
+    async def max_listen_id(self) -> int:
+        """The newest row id in ``genome_listens`` (``0`` when empty): a "rows added after" mark."""
+        assert self.database is not None
+        rows = await self.database.get_rows_from_query(
+            f"SELECT MAX(id) AS newest FROM {DB_TABLE_GENOME_LISTENS}", limit=1
+        )
+        newest = rows[0]["newest"] if rows else None
+        return int(newest) if newest is not None else 0
+
+    async def remove_duplicate_listens(
+        self,
+        listener: str,
+        *,
+        since: int | None = None,
+        until: int | None = None,
+        added_after_id: int | None = None,
+    ) -> DuplicateRemoval:
+        """
+        Delete Last.fm rows that are second copies of a play another source already recorded.
+
+        Two kinds, both decided in favour of the non-Last.fm row:
+
+        * **Apple Music, same day.** Apple's daily-tracks export and a Last.fm scrobbler watching
+          the same Apple Music app record the same plays. Apple has only the day (and hour), so
+          the match is per ``(artist_key, track_key, UTC day)``: when Apple recorded a track on a
+          day, EVERY Last.fm row for that track that day goes, and Apple's count stands.
+          Deliberately not "as many as Apple counted": that rule is not idempotent - a second
+          pass over the same day would see the survivors as fresh duplicates and eat into them,
+          and this runs again after every import. On the real history the difference is 382
+          of 22,664 rows.
+        * **Music Assistant, one track-length later.** MA's Last.fm scrobbler submits a play when
+          it is fully played, stamped with the submission time, so a live-captured
+          ``ma_playlog`` row (stamped with the START) cancels one Last.fm row for the same track
+          landing between a little before its start and its length plus an hour after it (a
+          pause delays the scrobble). Artist and track may carry extra text on the Last.fm side
+          ("A, B" for a multi-artist credit), so a Last.fm key that starts with the MA key as a
+          whole word also matches.
+
+          This pairing is NOT idempotent by nature (nothing records which scrobble an MA row
+          already cancelled), so after the one-time whole-history pass it is only ever run for
+          pairs where at least one row is NEW - ``added_after_id`` - and each pair is therefore
+          considered exactly once: when its second member arrives. The residual risk is a
+          genuine second play of the same track, scrobbled from another device within the hour
+          after an MA play whose own scrobble was already removed.
+
+        :param listener: The listener partition to clean.
+        :param since: Only consider plays at or after this timestamp (whole UTC days are used for
+            the Apple rule, so a boundary never splits a day). ``None`` = from the beginning.
+        :param until: Only consider plays at or before this timestamp. ``None`` = to the end.
+        :param added_after_id: Only pair an MA row with a Last.fm row when at least one of them
+            has a row id above this (was just added). ``None`` = every pair (the one-time pass).
+        """
+        assert self.database is not None
+        lo = 0 if since is None else (since // _SECONDS_PER_DAY) * _SECONDS_PER_DAY
+        hi = 2**62 if until is None else (until // _SECONDS_PER_DAY + 1) * _SECONDS_PER_DAY - 1
+        params = {"listener": listener, "lo": lo, "hi": hi}
+        apple_ids = [
+            int(row["id"])
+            for row in await self.database.get_rows_from_query(
+                # MATERIALIZED + GROUP BY: without them SQLite re-evaluates the CTE per row
+                # (minutes on the real history, against under a second)
+                f"""WITH apple AS MATERIALIZED (
+                        SELECT artist_key, track_key, played_at / {_SECONDS_PER_DAY} AS day
+                        FROM {DB_TABLE_GENOME_LISTENS}
+                        WHERE listener = :listener AND source = '{SOURCE_APPLE_EXPORT}'
+                          AND played_at BETWEEN :lo AND :hi
+                        GROUP BY artist_key, track_key, day),
+                    lastfm AS MATERIALIZED (
+                        SELECT id, artist_key, track_key, played_at / {_SECONDS_PER_DAY} AS day
+                        FROM {DB_TABLE_GENOME_LISTENS}
+                        WHERE listener = :listener AND source = '{SOURCE_LASTFM}'
+                          AND played_at BETWEEN :lo AND :hi)
+                    SELECT lastfm.id AS id FROM lastfm
+                    JOIN apple USING (artist_key, track_key, day)""",
+                params,
+                limit=0,
+            )
+        ]
+        ma_ids = await self._ma_scrobble_duplicates(
+            listener, lo, hi, exclude=set(apple_ids), added_after_id=added_after_id
+        )
+        await self._delete_listens([*apple_ids, *ma_ids])
+        return DuplicateRemoval(apple=len(apple_ids), music_assistant=len(ma_ids))
+
+    async def _ma_scrobble_duplicates(
+        self, listener: str, lo: int, hi: int, *, exclude: set[int], added_after_id: int | None
+    ) -> list[int]:
+        """Return the ids of Last.fm rows that are MA's own scrobbles of live-captured plays."""
+        assert self.database is not None
+        late = _MA_SCROBBLE_UNKNOWN_DURATION_SECONDS + _MA_SCROBBLE_LATE_SLACK_SECONDS
+        ma_rows = await self.database.get_rows_from_query(
+            f"SELECT id, artist_key, track_key, played_at, duration_ms "
+            f"FROM {DB_TABLE_GENOME_LISTENS} "
+            f"WHERE listener = :listener AND source = '{SOURCE_MA_PLAYLOG}' "
+            "AND played_at BETWEEN :lo AND :hi ORDER BY played_at, id",
+            {"listener": listener, "lo": lo - late, "hi": hi},
+            limit=0,
+        )
+        if not ma_rows:
+            return []
+        lastfm_rows = [
+            row
+            for row in await self.database.get_rows_from_query(
+                f"SELECT id, artist_key, track_key, played_at FROM {DB_TABLE_GENOME_LISTENS} "
+                f"WHERE listener = :listener AND source = '{SOURCE_LASTFM}' "
+                "AND played_at BETWEEN :lo AND :hi ORDER BY played_at, id",
+                {
+                    "listener": listener,
+                    "lo": max(lo, int(ma_rows[0]["played_at"]) - _MA_SCROBBLE_EARLY_SECONDS),
+                    "hi": hi + late,
+                },
+                limit=0,
+            )
+            if int(row["id"]) not in exclude
+        ]
+        lastfm_times = [int(row["played_at"]) for row in lastfm_rows]
+        taken: set[int] = set()
+        matched: list[int] = []
+        for ma in ma_rows:
+            ma_is_new = added_after_id is None or int(ma["id"]) > added_after_id
+            start = int(ma["played_at"])
+            duration = (
+                int(ma["duration_ms"]) // 1000
+                if ma["duration_ms"]
+                else _MA_SCROBBLE_UNKNOWN_DURATION_SECONDS
+            )
+            latest = start + duration + _MA_SCROBBLE_LATE_SLACK_SECONDS
+            # sorted by time: jump straight to the window instead of scanning from the start
+            first = bisect.bisect_left(lastfm_times, start - _MA_SCROBBLE_EARLY_SECONDS)
+            for lf in lastfm_rows[first:]:
+                if int(lf["played_at"]) > latest:
+                    break
+                lf_id = int(lf["id"])
+                if lf_id in taken or not (ma_is_new or lf_id > (added_after_id or 0)):
+                    continue
+                if _key_matches(lf["artist_key"], ma["artist_key"]) and _key_matches(
+                    lf["track_key"], ma["track_key"]
+                ):
+                    taken.add(lf_id)
+                    matched.append(lf_id)
+                    break
+        return matched
+
+    async def _delete_listens(self, ids: Sequence[int]) -> None:
+        """Delete ``genome_listens`` rows by id, in chunks well under SQLite's variable limit."""
+        assert self.database is not None
+        if not ids:
+            return
+        for start in range(0, len(ids), 500):
+            chunk = ids[start : start + 500]
+            placeholders = ", ".join(f":id{i}" for i in range(len(chunk)))
+            await self.database.execute(
+                f"DELETE FROM {DB_TABLE_GENOME_LISTENS} WHERE id IN ({placeholders})",
+                {f"id{i}": listen_id for i, listen_id in enumerate(chunk)},
+            )
+        await self.database.commit()
+
     def _dedupe_key(self, listener: str, listen: Listen) -> str:
         """Build the ``dedupe_key`` for a listen per §3.1."""
         source_class = _MA_SOURCE_CLASS if listen.source in _MA_SOURCES else listen.source
@@ -1053,4 +1366,4 @@ class GenomeStore:
         LOGGER.debug("No migration steps defined yet for version %s", prev_version)
 
 
-__all__ = ["ArtistMetaWrite", "GenomeStore"]
+__all__ = ["ArtistMetaWrite", "DuplicateRemoval", "GenomeStore"]

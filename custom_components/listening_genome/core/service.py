@@ -16,17 +16,23 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 from .constants import (
     CONF_ENRICH_ENABLED,
+    CONF_LASTFM_API_KEY,
+    CONF_LASTFM_POLL_ENABLED,
+    CONF_LASTFM_POLL_INTERVAL_HOURS,
+    CONF_LASTFM_USERNAME,
     CONF_MIN_SECONDS_PLAYED,
     CONF_OBSCURITY_PERCENTILE,
     CONF_REBUILD_SCHEDULE_HOUR,
     CONF_RECENCY_HALF_LIFE_DAYS,
     DEFAULT_ENRICH_ENABLED,
     DEFAULT_HALF_LIFE_DAYS,
+    DEFAULT_LASTFM_POLL_ENABLED,
+    DEFAULT_LASTFM_POLL_INTERVAL_HOURS,
     DEFAULT_MIN_SECONDS_PLAYED,
     DEFAULT_NEW_ARTIST_WINDOW_DAYS,
     DEFAULT_OBSCURITY_PERCENTILE,
@@ -56,9 +62,10 @@ class GenomeServiceSettings:
     """
     The settings the fork read from its core config (same keys, same defaults).
 
-    The first three drive the engine. The last two are scheduling settings the service itself
-    never reads; they live here so one object, built once from the entry's options, carries
-    every setting the integration has.
+    The first three drive the engine. The rest are scheduling and Last.fm settings the service
+    itself never reads; they live here so one object, built once from the entry's options,
+    carries every setting the integration has. The API key is kept out of ``repr`` so the
+    object can be logged.
     """
 
     half_life_days: int = DEFAULT_HALF_LIFE_DAYS
@@ -66,6 +73,15 @@ class GenomeServiceSettings:
     min_seconds_played: int = DEFAULT_MIN_SECONDS_PLAYED
     rebuild_schedule_hour: int = DEFAULT_REBUILD_SCHEDULE_HOUR
     enrich_enabled: bool = DEFAULT_ENRICH_ENABLED
+    lastfm_username: str = ""
+    lastfm_api_key: str = field(default="", repr=False)
+    lastfm_poll_enabled: bool = DEFAULT_LASTFM_POLL_ENABLED
+    lastfm_poll_interval_hours: int = DEFAULT_LASTFM_POLL_INTERVAL_HOURS
+
+    @property
+    def lastfm_configured(self) -> bool:
+        """Whether both Last.fm credentials are set."""
+        return bool(self.lastfm_username and self.lastfm_api_key)
 
     @classmethod
     def from_options(cls, options: Mapping[str, object]) -> GenomeServiceSettings:
@@ -81,6 +97,14 @@ class GenomeServiceSettings:
             min_seconds_played=_int(CONF_MIN_SECONDS_PLAYED, DEFAULT_MIN_SECONDS_PLAYED),
             rebuild_schedule_hour=_int(CONF_REBUILD_SCHEDULE_HOUR, DEFAULT_REBUILD_SCHEDULE_HOUR),
             enrich_enabled=bool(options.get(CONF_ENRICH_ENABLED, DEFAULT_ENRICH_ENABLED)),
+            lastfm_username=str(options.get(CONF_LASTFM_USERNAME) or "").strip(),
+            lastfm_api_key=str(options.get(CONF_LASTFM_API_KEY) or "").strip(),
+            lastfm_poll_enabled=bool(
+                options.get(CONF_LASTFM_POLL_ENABLED, DEFAULT_LASTFM_POLL_ENABLED)
+            ),
+            lastfm_poll_interval_hours=_int(
+                CONF_LASTFM_POLL_INTERVAL_HOURS, DEFAULT_LASTFM_POLL_INTERVAL_HOURS
+            ),
         )
 
     def engine_settings(self) -> tuple[int, int, int]:

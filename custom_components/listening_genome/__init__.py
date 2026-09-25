@@ -13,6 +13,7 @@ import os
 from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -24,6 +25,8 @@ from .const import DOMAIN, PLATFORMS, STORAGE_DIRNAME
 from .core.constants import (
     GENOME_ENRICHMENT_BATCH_LIMIT,
     GENOME_MB_ENRICHMENT_MIN_INTERVAL_SECONDS,
+    LASTFM_RATE_LIMIT,
+    LASTFM_RATE_PERIOD_SECONDS,
     LISTENBRAINZ_RATE_LIMIT,
     LISTENBRAINZ_RATE_PERIOD_SECONDS,
     LISTENER_HOUSEHOLD,
@@ -36,7 +39,9 @@ from .core.jobs import JobTracker
 from .core.operations import GenomeOperations
 from .core.service import GenomeService, GenomeServiceSettings
 from .core.store import GenomeStore
+from .live_capture import MusicAssistantCapture
 from .runtime import ListeningGenomeData
+from .services import async_register_services
 from .websocket_api import async_register_websocket_commands
 
 if TYPE_CHECKING:
@@ -64,8 +69,9 @@ def tz_offset_seconds() -> int:
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the websocket commands once, independent of any entry."""
+    """Register the websocket commands and actions once, independent of any entry."""
     async_register_websocket_commands(hass)
+    async_register_services(hass)
     return True
 
 
@@ -111,6 +117,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ListeningGenomeConfigEnt
                 period=LISTENBRAINZ_RATE_PERIOD_SECONDS,
                 user_agent=agent,
             ),
+            lastfm_client=AiohttpClient(
+                session,
+                rate_limit=LASTFM_RATE_LIMIT,
+                period=LASTFM_RATE_PERIOD_SECONDS,
+                user_agent=agent,
+            ),
             enrichment_limit=GENOME_ENRICHMENT_BATCH_LIMIT,
             enrichment_min_interval_seconds=GENOME_MB_ENRICHMENT_MIN_INTERVAL_SECONDS,
         )
@@ -136,6 +148,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ListeningGenomeConfigEnt
         await store.close()
         raise
 
+    capture = MusicAssistantCapture(hass, entry, operations)
+    # rebuilds name each room by what Music Assistant calls the player right now
+    store.player_name_resolver = capture.player_name
+
     runtime = ListeningGenomeData(
         hass=hass,
         entry=entry,
@@ -146,10 +162,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ListeningGenomeConfigEnt
         coordinator=coordinator,
         settings=settings,
         user_agent=agent,
+        capture=capture,
     )
     entry.runtime_data = runtime
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     runtime.async_start_schedules()
+    capture.async_start()
+    # a stop does not unload entries: write the plays still open while the store is still open
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, capture.async_handle_stop)
+    )
+    runtime.async_request_duplicate_cleanup()
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True
 
