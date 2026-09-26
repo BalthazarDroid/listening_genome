@@ -18,6 +18,7 @@ export const genomeTokens = css`
     --genome-accent: hsl(190 85% 62%);
     --genome-panel-bg: hsl(215 40% 60% / 0.05);
     --genome-panel-border: hsl(200 65% 70% / 0.3);
+    --genome-panel-rim: hsl(200 65% 70% / 0.07);
     --genome-tick: hsl(190 90% 66% / 0.95);
     --genome-ground: #070a10;
     --genome-fg: #e7e9ee;
@@ -64,37 +65,40 @@ export const genomeBase = css`
     padding: 20px;
     border-radius: var(--genome-radius);
     background: var(--genome-panel-bg);
-    border: 1px solid var(--genome-panel-border);
     backdrop-filter: blur(6px);
-    box-shadow: inset 0 1px 0 hsl(200 60% 70% / 0.06);
   }
-  .panel::before,
-  .panel::after {
+  /* The rim: a hairline that is bright at the top-left and bottom-right corners and fades out
+     along both edges, like the rule under the page title. It is painted as a gradient and
+     masked down to a 1px ring, because a real border cannot fade along its length and still
+     follow the rounded corners. */
+  .panel::before {
     content: "";
     position: absolute;
-    width: 18px;
-    height: 18px;
-    pointer-events: none;
-    border-color: var(--genome-tick);
-    border-style: solid;
+    inset: 0;
+    padding: 1px;
     border-radius: inherit;
-    filter: drop-shadow(0 0 3px hsl(190 90% 60% / 0.55));
-  }
-  .panel::before {
-    top: 0;
-    left: 0;
-    border-width: 1px 0 0 1px;
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-    border-bottom-left-radius: 0;
-  }
-  .panel::after {
-    bottom: 0;
-    right: 0;
-    border-width: 0 1px 1px 0;
-    border-top-left-radius: 0;
-    border-top-right-radius: 0;
-    border-bottom-left-radius: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        45% 180px at 0 0,
+        var(--genome-tick),
+        hsl(200 65% 70% / 0.14) 40%,
+        transparent 100%
+      ),
+      radial-gradient(
+        30% 120px at 100% 100%,
+        var(--genome-tick),
+        hsl(200 65% 70% / 0.12) 40%,
+        transparent 100%
+      ),
+      var(--genome-panel-rim);
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box exclude,
+      linear-gradient(#000 0 0);
   }
   .panel-header {
     display: flex;

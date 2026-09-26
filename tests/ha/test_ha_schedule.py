@@ -6,6 +6,8 @@ User-Agent every outgoing request carries, job state across reloads, and clean u
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -35,7 +37,12 @@ if TYPE_CHECKING:
 TZ = "America/Chicago"
 # 03:30 CDT on 2026-09-25
 START = "2026-09-25T08:30:00+00:00"
-EXPECTED_USER_AGENT = "ListeningGenome/0.1.0 ( https://github.com/BalthazarDroid/listening_genome )"
+# the version comes from manifest.json, so a release bump does not break this test
+_MANIFEST = Path(__file__).parents[2] / "custom_components" / "listening_genome" / "manifest.json"
+_VERSION = json.loads(_MANIFEST.read_text(encoding="utf-8"))["version"]
+EXPECTED_USER_AGENT = (
+    f"ListeningGenome/{_VERSION} ( https://github.com/BalthazarDroid/listening_genome )"
+)
 
 
 def _new_listen(track: str, played_at: int = PLAYED_AT + 60) -> Listen:
