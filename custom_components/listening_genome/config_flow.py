@@ -135,27 +135,27 @@ class ListeningGenomeConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
-def _whole_number(value: Any) -> int:
-    """Accept 12 or 12.0, reject 12.5: the number selector bounds a value but not its step."""
-    number = float(value)
-    if not number.is_integer():
-        raise vol.Invalid("expected a whole number")
-    return int(number)
+def _is_whole(value: Any) -> bool:
+    """12 or 12.0, not 12.5: the number selector bounds a value but not its step."""
+    try:
+        return float(value).is_integer()
+    except TypeError, ValueError:
+        return False
 
 
-def _int_in(bounds: tuple[int, int]) -> vol.All:
+def _int_in(bounds: tuple[int, int]) -> NumberSelector:
     """
-    A whole number within ``bounds`` (inclusive).
+    A number within ``bounds`` (inclusive); that it is WHOLE is checked in the step.
 
-    The selector's bounds are enforced server-side as well as shown in the form: a value out of
-    range is rejected before the flow step runs, and nothing is saved.
+    Only a selector may go in the schema: the frontend receives the schema serialized, and a
+    plain validator function (the obvious ``vol.All(selector, whole_number)``) cannot be
+    serialized - "Configure" then fails with a 500 before the form is ever shown. The
+    selector's bounds are still enforced server-side: an out-of-range value is rejected before
+    the step runs, and nothing is saved.
     """
     low, high = bounds
-    return vol.All(
-        NumberSelector(
-            NumberSelectorConfig(min=low, max=high, step=1, mode=NumberSelectorMode.BOX)
-        ),
-        _whole_number,
+    return NumberSelector(
+        NumberSelectorConfig(min=low, max=high, step=1, mode=NumberSelectorMode.BOX)
     )
 
 
@@ -229,7 +229,9 @@ class ListeningGenomeOptionsFlow(OptionsFlow):
         current = GenomeServiceSettings.from_options(self.config_entry.options)
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {"reason": ""}
-        if user_input is not None:
+        if user_input is not None and not _all_whole(user_input):
+            errors["base"] = "not_whole_number"
+        elif user_input is not None:
             options = _to_options(user_input, current)
             error = _lastfm_form_error(options)
             if error is None and _lastfm_changed(options, current) and options[CONF_LASTFM_API_KEY]:
@@ -291,6 +293,18 @@ def _to_options(user_input: Mapping[str, Any], current: GenomeServiceSettings) -
             lastfm.get(CONF_LASTFM_POLL_INTERVAL_HOURS) or current.lastfm_poll_interval_hours
         ),
     }
+
+
+def _all_whole(user_input: Mapping[str, Any]) -> bool:
+    """Every number field holds a whole number (the Last.fm interval sits in its section)."""
+    lastfm = user_input.get(SECTION_LASTFM) or {}
+    values = [
+        user_input.get(CONF_RECENCY_HALF_LIFE_DAYS, 0),
+        user_input.get(CONF_MIN_SECONDS_PLAYED, 0),
+        user_input.get(CONF_REBUILD_SCHEDULE_HOUR, 0),
+        lastfm.get(CONF_LASTFM_POLL_INTERVAL_HOURS, 1),
+    ]
+    return all(_is_whole(value) for value in values)
 
 
 def _lastfm_form_error(options: Mapping[str, Any]) -> str | None:

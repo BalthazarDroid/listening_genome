@@ -64,7 +64,8 @@
       "lastfm_key_format": "That does not look like a Last.fm API key: it should be 32 letters and digits. Copy it again from your Last.fm API account page.",
       "lastfm_key_missing": "Enter the API key that goes with this Last.fm username.",
       "lastfm_poll_needs_account": "Automatic fetching needs a Last.fm username and API key.",
-      "lastfm_rejected": "Last.fm did not accept these details: {reason}"
+      "lastfm_rejected": "Last.fm did not accept these details: {reason}",
+      "not_whole_number": "Use whole numbers: days, seconds, hours and the polling interval cannot have decimals."
     }
   },
   "selector": {

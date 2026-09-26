@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
@@ -152,7 +152,6 @@ async def test_changing_an_engine_setting_rebuilds_after_the_reload(
         (CONF_RECENCY_HALF_LIFE_DAYS, 3651),
         (CONF_RECENCY_HALF_LIFE_DAYS, -5),
         (CONF_MIN_SECONDS_PLAYED, 601),
-        (CONF_MIN_SECONDS_PLAYED, 12.5),
         (CONF_OBSCURITY_PERCENTILE, "20"),
     ],
 )
@@ -298,4 +297,49 @@ async def test_lastfm_refusal_is_shown_without_the_key(
     assert result["errors"] == {"base": "lastfm_rejected"}
     assert "API key" in result["description_placeholders"]["reason"]
     assert KEY not in repr(result)
+    assert loaded.options == {}
+
+
+async def test_the_settings_form_opens_in_the_browser(
+    hass: HomeAssistant, loaded: MockConfigEntry, hass_client: Any
+) -> None:
+    """
+    Open and submit the form the way the frontend does: over HTTP, which serializes the schema.
+
+    The flow-manager calls in the tests above never serialize it, so a validator the frontend
+    cannot describe (a plain function inside ``vol.All``) passed them all and still made
+    "Configure" fail with a 500 on real hardware.
+    """
+    from homeassistant.setup import async_setup_component
+
+    assert await async_setup_component(hass, "config", {})
+    client = await hass_client()
+    resp = await client.post(
+        "/api/config/config_entries/options/flow", json={"handler": loaded.entry_id}
+    )
+    assert resp.status == 200, await resp.text()
+    form = await resp.json()
+    assert form["type"] == "form"
+    names = [field["name"] for field in form["data_schema"]]
+    assert CONF_RECENCY_HALF_LIFE_DAYS in names
+    assert SECTION_LASTFM in names
+    resp = await client.post(
+        f"/api/config/config_entries/options/flow/{form['flow_id']}",
+        json={**VALID, CONF_REBUILD_SCHEDULE_HOUR: 5},
+    )
+    assert resp.status == 200, await resp.text()
+    assert (await resp.json())["type"] == "create_entry"
+    await hass.async_block_till_done()
+    assert loaded.options[CONF_REBUILD_SCHEDULE_HOUR] == 5
+
+
+async def test_a_fraction_is_refused_with_a_message(
+    hass: HomeAssistant, loaded: MockConfigEntry
+) -> None:
+    result = await hass.config_entries.options.async_init(loaded.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {**VALID, CONF_MIN_SECONDS_PLAYED: 12.5}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "not_whole_number"}
     assert loaded.options == {}
