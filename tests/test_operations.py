@@ -79,29 +79,33 @@ def _pending(name: str) -> ArtistMeta:
     )
 
 
+def _listen(artist: str, track: str) -> Listen:
+    return Listen(
+        played_at=NOW,
+        artist_key=artist.lower(),
+        artist_name=artist,
+        track_key=track.lower(),
+        track_name=track,
+        album_name=None,
+        source="apple_export",
+        player_id=None,
+        duration_ms=200_000,
+        played_ms=200_000,
+        fully_played=True,
+        confidence=1.0,
+    )
+
+
 async def _store_with_pending(tmp_path: Path, *names: str) -> GenomeStore:
     store = GenomeStore(str(tmp_path))
     await store.setup()
+    # every artist gets a listen: resolution counts and failure lists only cover artists in the
+    # listening history. Each listen creates a pending stub the upserts below overwrite.
     await store.add_listens(
-        [
-            Listen(
-                played_at=NOW,
-                artist_key="alpha",
-                artist_name="Alpha",
-                track_key="one",
-                track_name="One",
-                album_name=None,
-                source="apple_export",
-                player_id=None,
-                duration_ms=200_000,
-                played_ms=200_000,
-                fully_played=True,
-                confidence=1.0,
-            )
-        ],
+        [_listen("Alpha", "One"), *(_listen(name, f"{name} Track") for name in names)],
         listener="household",
     )
-    # the listen created a pending stub for Alpha; resolve it so only `names` are due
+    # resolve Alpha so only `names` are due
     await store.upsert_artist_meta([_pending("Alpha")], state=RESOLVE_STATE_OK)
     await store.upsert_artist_meta([_pending(name) for name in names], state=RESOLVE_STATE_PENDING)
     return store

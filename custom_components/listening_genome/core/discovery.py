@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..compat import create_safe_string, parse_title_and_version
@@ -106,6 +106,11 @@ class DiscoveryReport:
     in_library: int | None = None  # None: the library could not be read this pass
     in_library_with_song: int = 0
     lastfm: bool = True
+    #: artists Music Assistant's library holds, and how many of them have genres to match on
+    library_artists: int = 0
+    library_with_genres: int = 0
+    #: barely played library artists with no genres anywhere, newly queued for a lookup
+    lookups_queued: int = 0
 
     def summary(self) -> str:
         parts = []
@@ -123,8 +128,14 @@ class DiscoveryReport:
         else:
             parts.append(
                 f"{self.in_library} barely played artists in the library "
-                f"({self.in_library_with_song} with a song)"
+                f"({self.in_library_with_song} with a song), from {self.library_artists} "
+                f"library artists ({self.library_with_genres} with genres)"
             )
+            if self.lookups_queued:
+                parts.append(
+                    f"{self.lookups_queued} library artists queued for a genre lookup; "
+                    "they join after the next enrichment passes"
+                )
         return "; ".join(parts)
 
 
@@ -324,6 +335,7 @@ class DiscoveryRunner:
         }
 
         if library is not None and library_artists is not None:
+            library_artists = await self._with_stored_genres(library_artists, plays, report)
             cold = await self._cold_corners(library, library_artists, genres, plays)
             blob["in_library"] = [row.to_dict() for row in cold]
             report.in_library = len(cold)
@@ -350,6 +362,41 @@ class DiscoveryRunner:
             report.suggested_with_song = sum(1 for row in suggested if row.song)
         await self.store.set_cached_discovery(LISTENER_HOUSEHOLD, blob)
         return report
+
+    async def _with_stored_genres(
+        self,
+        library_artists: list[LibraryArtist],
+        plays: Mapping[str, int],
+        report: DiscoveryReport,
+    ) -> list[LibraryArtist]:
+        """
+        Give library artists without genres the ones Genome looked up itself.
+
+        Music Assistant's library artists often carry no genres at all (whether they do depends
+        on which providers filled in their metadata), and without genres nothing can match a
+        divergent genre. Genome's own MusicBrainz genres cover every artist in the listening
+        history; barely played artists with none anywhere are queued for the same lookup.
+        """
+        missing = [artist.artist_key for artist in library_artists if not artist.genres]
+        stored = await self.store.artist_genres(missing) if missing else {}
+        filled: list[LibraryArtist] = []
+        to_look_up: list[tuple[str, str]] = []
+        for artist in library_artists:
+            if not artist.genres and artist.artist_key in stored:
+                artist = replace(artist, genres=stored[artist.artist_key])
+            elif not artist.genres and plays.get(artist.artist_key, 0) <= (
+                GENOME_DISCOVERY_COLD_MAX_PLAYS
+            ):
+                to_look_up.append((artist.artist_key, artist.artist_name))
+            filled.append(artist)
+        report.library_artists = len(filled)
+        report.library_with_genres = sum(1 for artist in filled if artist.genres)
+        if to_look_up:
+            try:
+                report.lookups_queued = await self.store.queue_artist_lookups(to_look_up)
+            except Exception:
+                LOGGER.warning("Discovery: could not queue genre lookups", exc_info=True)
+        return filled
 
     async def _cold_corners(
         self,

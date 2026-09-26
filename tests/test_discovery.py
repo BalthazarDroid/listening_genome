@@ -10,7 +10,7 @@ from listening_genome.core.discovery import (
     LibraryArtist,
     pick_song,
 )
-from listening_genome.core.models import Listen
+from listening_genome.core.models import ArtistMeta, Listen
 from listening_genome.core.store import GenomeStore
 
 if TYPE_CHECKING:
@@ -262,5 +262,61 @@ async def test_an_artist_without_top_tracks_is_still_suggested_without_a_song(
         await _runner(store, lastfm).run(GENOME, FakeLibrary(LIBRARY, {}), KEY)
         [row] = (await _runner(store, lastfm).read(lastfm_configured=True)).suggested
         assert (row.artist_name, row.song) == ("Obscure Band", None)
+    finally:
+        await store.close()
+
+
+async def test_library_artists_without_genres_use_the_genres_genome_looked_up(
+    tmp_path: Path,
+) -> None:
+    """
+    Production MA's library artists came back with no genres, so no cold corner could match.
+
+    Genome's own MusicBrainz genres fill the gap; a barely played artist with none anywhere is
+    queued for a lookup - behind the listening history, and outside its resolution counts.
+    """
+    store = await _store(tmp_path)
+    try:
+        await store.add_listens([_listen("Tame Impala", "Elephant")], listener="household")
+        await store.upsert_artist_meta(
+            [
+                ArtistMeta(
+                    artist_key="tame impala",
+                    artist_name="Tame Impala",
+                    mbid=None,
+                    genres=("psychedelic",),
+                    first_release_year=None,
+                    lb_listeners=None,
+                    lb_listen_count=None,
+                )
+            ],
+            state="ok",
+        )
+        counts_before = await store.artist_resolution_counts()
+        library = [
+            LibraryArtist("the dandy warhols", "The Dandy Warhols", (), ref=1),
+            LibraryArtist("tame impala", "Tame Impala", (), ref=2),
+            LibraryArtist("pond", "Pond", (), ref=3),  # never played, never looked up
+        ]
+        lastfm = FakeLastfm(similar={}, top={})
+        report = await _runner(store, lastfm).run(
+            GENOME, FakeLibrary(library, LIBRARY_TRACKS), None
+        )
+        assert report.in_library == 1
+        assert (report.library_artists, report.library_with_genres) == (3, 1)
+        assert report.lookups_queued == 1
+        assert "from 3 library artists (1 with genres)" in report.summary()
+        result = await _runner(store, lastfm).read(lastfm_configured=False)
+        [cold] = result.in_library
+        assert (cold.artist_name, cold.song, cold.plays) == ("Tame Impala", "Let It Happen", 1)
+
+        # Pond waits for enrichment, after the history's own pending artist...
+        pending = await store.pending_artist_keys()
+        assert [key for key, _ in pending] == ["the dandy warhols", "pond"]
+        # ...and does not show up in the genome's "still resolving" figures
+        assert await store.artist_resolution_counts() == counts_before
+        # a second pass queues nothing new
+        again = await _runner(store, lastfm).run(GENOME, FakeLibrary(library, LIBRARY_TRACKS), None)
+        assert again.lookups_queued == 0
     finally:
         await store.close()

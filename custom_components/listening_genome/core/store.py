@@ -85,6 +85,18 @@ _LASTFM_BACKFILL_DONE_KEY = "lastfm_backfill_done"
 # (see GenomeStore.unresolved_dismissed_keys / all_failed_artist_keys).
 _UNRESOLVED_DISMISSED_KEY = "unresolved_dismissed_keys"
 
+#: an artist_meta row whose artist has at least one stored listen. Discovery also queues
+#: MusicBrainz lookups for library artists never played (their genres find cold corners);
+#: those rows must not count towards the genome's own "still resolving / could not be
+#: identified" figures, which are about the listening history.
+_IN_HISTORY = (
+    f"EXISTS (SELECT 1 FROM {DB_TABLE_GENOME_LISTENS} history "
+    f"WHERE history.artist_key = {DB_TABLE_GENOME_ARTIST_META}.artist_key)"
+)
+
+#: artist keys per ``IN (...)`` read of genome_artist_meta
+_META_READ_CHUNK = 500
+
 # settings-table key holding the persisted Listening Genome job map (see
 # `controllers/genome/jobs.py`): {job_id: JobState.to_dict()}. Same table and same json-typed
 # row shape as the keys above - a long import's outcome has to outlive both the websocket
@@ -390,6 +402,59 @@ class GenomeStore:
         )
         return {row["artist_key"]: self._row_to_artist_meta(row) for row in rows}
 
+    async def artist_genres(self, artist_keys: Sequence[str]) -> dict[str, tuple[str, ...]]:
+        """
+        Return the stored genre keys of every artist in ``artist_keys`` that has any.
+
+        Read in chunks, so a whole Music Assistant library can be looked up at once.
+        """
+        found: dict[str, tuple[str, ...]] = {}
+        keys = list(dict.fromkeys(artist_keys))
+        for start in range(0, len(keys), _META_READ_CHUNK):
+            meta = await self.get_artist_meta(keys[start : start + _META_READ_CHUNK])
+            found.update({key: row.genres for key, row in meta.items() if row.genres})
+        return found
+
+    async def queue_artist_lookups(self, artists: Iterable[tuple[str, str]]) -> int:
+        """
+        Queue a MusicBrainz lookup for artists Genome has no metadata row for yet.
+
+        Discovery's cold corners are library artists barely played - most never played at all,
+        so enrichment (which follows the listening history) has never looked them up. A
+        ``pending`` stub puts them in the same queue; the hourly enrichment pass resolves them
+        after every artist from the history (see :meth:`pending_artist_keys`). Artists that
+        already have a row, in any state, are left alone.
+
+        :param artists: ``(artist_key, artist_name)`` pairs.
+        :return: How many were newly queued.
+        """
+        assert self.database is not None
+        pairs = list(dict(artists).items())
+        if not pairs:
+            return 0
+        existing: set[str] = set()
+        for start in range(0, len(pairs), _META_READ_CHUNK):
+            chunk = [key for key, _ in pairs[start : start + _META_READ_CHUNK]]
+            rows = await self.database.get_rows_from_query(
+                f"SELECT artist_key FROM {DB_TABLE_GENOME_ARTIST_META} WHERE artist_key IN (:keys)",
+                {"keys": chunk},
+                limit=0,
+            )
+            existing.update(row["artist_key"] for row in rows)
+        queued = 0
+        for key, name in pairs:
+            if key in existing:
+                continue
+            await self.database.execute(
+                f"INSERT OR IGNORE INTO {DB_TABLE_GENOME_ARTIST_META} "
+                "(artist_key, artist_name, mb_tags, genres, resolved_at, resolve_state) "
+                "VALUES (:artist_key, :artist_name, '[]', '[]', 0, :state)",
+                {"artist_key": key, "artist_name": name, "state": RESOLVE_STATE_PENDING},
+            )
+            queued += 1
+        await self.database.commit()
+        return queued
+
     async def upsert_artist_meta(self, rows: Sequence[ArtistMeta], *, state: str) -> None:
         """
         Upsert engine-relevant artist metadata (the frozen ``GenomeStore`` surface).
@@ -451,7 +516,8 @@ class GenomeStore:
             "OR (resolve_state = :error AND resolved_at < :error_cutoff) "
             "OR (resolve_state = :ok AND resolved_at < :ok_cutoff) "
             "OR (resolve_state = :not_found AND resolved_at < :not_found_cutoff) "
-            "ORDER BY resolved_at ASC",
+            # artists from the listening history before library-only discovery lookups
+            f"ORDER BY {_IN_HISTORY} DESC, resolved_at ASC",
             {
                 "pending": RESOLVE_STATE_PENDING,
                 "error": RESOLVE_STATE_ERROR,
@@ -505,7 +571,7 @@ class GenomeStore:
         assert self.database is not None
         rows = await self.database.get_rows_from_query(
             f"SELECT artist_key, artist_name, resolved_at FROM {DB_TABLE_GENOME_ARTIST_META} "
-            "WHERE resolve_state = :error "
+            f"WHERE resolve_state = :error AND {_IN_HISTORY} "
             "ORDER BY resolved_at DESC",
             {"error": RESOLVE_STATE_ERROR},
             limit=limit,
@@ -565,7 +631,8 @@ class GenomeStore:
         """
         assert self.database is not None
         rows = await self.database.get_rows_from_query(
-            f"SELECT artist_key FROM {DB_TABLE_GENOME_ARTIST_META} WHERE resolve_state = :error",
+            f"SELECT artist_key FROM {DB_TABLE_GENOME_ARTIST_META} "
+            f"WHERE resolve_state = :error AND {_IN_HISTORY}",
             {"error": RESOLVE_STATE_ERROR},
             limit=0,
         )
@@ -908,7 +975,7 @@ class GenomeStore:
         assert self.database is not None
         rows = await self.database.get_rows_from_query(
             f"SELECT resolve_state, COUNT(*) AS n FROM {DB_TABLE_GENOME_ARTIST_META} "
-            "GROUP BY resolve_state",
+            f"WHERE {_IN_HISTORY} GROUP BY resolve_state",
             limit=0,
         )
         return {row["resolve_state"]: int(row["n"]) for row in rows}

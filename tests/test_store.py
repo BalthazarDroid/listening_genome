@@ -39,6 +39,28 @@ def _listen(**overrides: object) -> Listen:
     return Listen(**defaults)  # type: ignore[arg-type]
 
 
+async def _add_history(store: GenomeStore, *artist_keys: str) -> None:
+    """
+    Give each artist one listen, so its meta row counts as part of the listening history.
+
+    Resolution counts and failure lists only cover artists with at least one listen; call this
+    before any meta upsert, since `add_listens` inserts a `pending` stub the upsert overwrites.
+    """
+    await store.add_listens(
+        [
+            _listen(
+                played_at=1_700_000_000 + i * 600,
+                artist_key=key,
+                artist_name=key,
+                track_key=f"{key}-track",
+                track_name=f"{key} track",
+            )
+            for i, key in enumerate(artist_keys)
+        ],
+        listener="household",
+    )
+
+
 async def _new_store(tmp_path: Path) -> GenomeStore:
     store = GenomeStore(str(tmp_path))
     await store.setup()
@@ -245,6 +267,7 @@ async def test_artist_resolution_counts_groups_by_state(tmp_path: Path) -> None:
     try:
         assert await store.artist_resolution_counts() == {}
         await store.add_listens([_listen()], listener="household")  # -> one pending stub
+        await _add_history(store, "resolved-artist", "missing-artist")
         await store.upsert_artist_meta_full(
             [{"artist_key": "resolved-artist", "artist_name": "Resolved Artist"}], state="ok"
         )
@@ -385,6 +408,7 @@ async def test_failed_artist_keys_returns_newest_attempt_first(tmp_path: Path) -
     """`failed_artist_keys` lists `error`-state artists, most recently attempted first."""
     store = await _new_store(tmp_path)
     try:
+        await _add_history(store, "a", "b")
         await store.upsert_artist_meta_full(
             [{"artist_key": "a", "artist_name": "Artist A"}], state=RESOLVE_STATE_ERROR
         )
@@ -424,6 +448,7 @@ async def test_failed_artist_keys_respects_limit(tmp_path: Path) -> None:
     """`limit` caps the number of rows returned."""
     store = await _new_store(tmp_path)
     try:
+        await _add_history(store, *(f"artist-{i}" for i in range(3)))
         for i in range(3):
             await store.upsert_artist_meta_full(
                 [{"artist_key": f"artist-{i}", "artist_name": f"Artist {i}"}],
@@ -472,6 +497,7 @@ async def test_retry_failed_artists_with_keys_only_resets_those(tmp_path: Path) 
     """Passing explicit keys leaves other `error` rows untouched."""
     store = await _new_store(tmp_path)
     try:
+        await _add_history(store, "a", "b")
         for key in ("a", "b"):
             await store.upsert_artist_meta_full(
                 [{"artist_key": key, "artist_name": key}], state=RESOLVE_STATE_ERROR
@@ -520,12 +546,51 @@ async def test_all_failed_artist_keys_is_unlimited(tmp_path: Path) -> None:
     """Unlike `failed_artist_keys`, this reports every `error` artist regardless of count."""
     store = await _new_store(tmp_path)
     try:
+        await _add_history(store, *(f"artist-{i}" for i in range(5)))
         for i in range(5):
             await store.upsert_artist_meta_full(
                 [{"artist_key": f"artist-{i}", "artist_name": f"Artist {i}"}],
                 state=RESOLVE_STATE_ERROR,
             )
         assert await store.all_failed_artist_keys() == {f"artist-{i}" for i in range(5)}
+    finally:
+        await store.close()
+
+
+async def test_library_only_artists_are_queued_but_not_counted(tmp_path: Path) -> None:
+    """
+    A meta row with no listens is resolved last and never counts toward the genome's figures.
+
+    Discovery queues MusicBrainz lookups for library artists that were never played; those
+    must not inflate "still resolving" / "could not be identified", and must not jump the
+    enrichment queue ahead of artists from the listening history.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        assert await store.queue_artist_lookups([("pond", "Pond")]) == 1
+        await store.add_listens([_listen()], listener="household")  # history artist, pending
+        # queued first with the same resolved_at, yet the history artist still comes first
+        assert await store.pending_artist_keys() == [
+            ("sigurros", "Sigur Rós"),
+            ("pond", "Pond"),
+        ]
+        assert await store.artist_resolution_counts() == {"pending": 1}
+
+        await store.upsert_artist_meta_full(
+            [{"artist_key": "pond", "artist_name": "Pond"}], state=RESOLVE_STATE_ERROR
+        )
+        assert await store.artist_resolution_counts() == {"pending": 1}
+        assert await store.all_failed_artist_keys() == set()
+        assert await store.failed_artist_keys() == []
+
+        # once its error cooldown lapses it is retried - still behind the history artist
+        stale = int(time.time()) - (RESOLVE_ERROR_COOLDOWN_HOURS + 1) * 3600
+        assert store.database is not None
+        await store.database.execute(
+            f"UPDATE {DB_TABLE_GENOME_ARTIST_META} SET resolved_at = :t WHERE artist_key = 'pond'",
+            {"t": stale},
+        )
+        assert [key for key, _name in await store.pending_artist_keys()] == ["sigurros", "pond"]
     finally:
         await store.close()
 

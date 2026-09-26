@@ -101,6 +101,8 @@ async def test_rebuild_uses_injected_now_and_settings(tmp_path: Path) -> None:
 async def test_rebuild_caches_with_real_resolution_counts(tmp_path: Path) -> None:
     store = await _seeded_store(tmp_path)
     try:
+        # resolution counts only cover artists with listens; the upsert overwrites the stub
+        await store.add_listens([_listen("Gamma", "Five")], listener="household")
         await store.upsert_artist_meta([_meta("Gamma", (), None)], state=RESOLVE_STATE_NOT_FOUND)
         service = _service(store)
         genome = await service.rebuild(now=NOW)

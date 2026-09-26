@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -179,6 +180,9 @@ async def test_ws_jobs(
 
 async def _fail_beta_and_gamma(loaded: MockConfigEntry) -> None:
     store = loaded.runtime_data.store
+    # failures count only for artists in the listening history (not discovery-only lookups)
+    gamma = replace(_listen("Delta"), artist_key="gamma", artist_name="Gamma")
+    await store.add_listens([_listen("Omega"), gamma], listener="household")
     await store.upsert_artist_meta_full(
         [
             {"artist_key": "beta", "artist_name": "Beta"},

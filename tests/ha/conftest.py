@@ -143,10 +143,18 @@ FAILING_ARTIST = "Radiohead"
 
 @pytest.fixture
 async def pending_artists(seeded_store: Path) -> Path:
-    """Add :data:`PENDING_ARTISTS` to the seeded store, all due for resolution."""
+    """
+    Add :data:`PENDING_ARTISTS` to the seeded store, all due for resolution.
+
+    Each gets one listen first: resolution counts and failure lists only cover artists in the
+    listening history, and the upsert below then overwrites the stub `add_listens` inserts.
+    """
     store = GenomeStore(str(seeded_store))
     await store.setup()
     try:
+        await store.add_listens(
+            [_listen(name, f"{name} Track") for name in PENDING_ARTISTS], listener="household"
+        )
         await store.upsert_artist_meta(
             [_meta(name, (), 0) for name in PENDING_ARTISTS], state=RESOLVE_STATE_PENDING
         )
