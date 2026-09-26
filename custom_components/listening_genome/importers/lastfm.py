@@ -331,31 +331,39 @@ class LastfmImporter:
 
     def _parse_page(self, data: Any) -> LastfmPage:
         """Convert a raw ``user.getRecentTracks`` JSON payload into a :class:`LastfmPage`."""
-        payload = data.get("recenttracks", {}) if isinstance(data, dict) else {}
-        attrs = payload.get("@attr", {})
+        payload = _as_dict(data.get("recenttracks") if isinstance(data, dict) else None)
+        attrs = _as_dict(payload.get("@attr"))
         page = int(attrs.get("page", 1) or 1)
         total_pages = int(attrs.get("totalPages", 1) or 1)
         raw_tracks = payload.get("track", [])
+        if isinstance(raw_tracks, dict):
+            # Last.fm collapses a one-scrobble page into a bare object instead of a list: an
+            # hourly poll that finds exactly one new play gets this shape
+            raw_tracks = [raw_tracks]
+        if not isinstance(raw_tracks, list):
+            raw_tracks = []
         listens: list[Listen] = []
         for track in raw_tracks:
-            if track.get("@attr", {}).get("nowplaying") == "true":
+            if not isinstance(track, dict):
+                continue
+            if _as_dict(track.get("@attr")).get("nowplaying") == "true":
                 # the currently-playing track has no `date` and is not a completed listen
                 continue
             date = track.get("date")
-            if not date or "uts" not in date:
+            if not isinstance(date, dict) or "uts" not in date:
                 continue
             try:
                 played_at = int(date["uts"])
             except TypeError, ValueError:
                 continue
-            artist_name = track.get("artist", {}).get("#text", "")
-            track_name = track.get("name", "")
+            artist_name = str(_as_dict(track.get("artist")).get("#text") or "")
+            track_name = str(track.get("name") or "")
             title, _version = parse_title_and_version(track_name, strip_for_search=True)
             artist_key = create_safe_string(artist_name)
             track_key = create_safe_string(title)
             if not artist_key or not track_key:
                 continue
-            album_name = track.get("album", {}).get("#text") or None
+            album_name = _as_dict(track.get("album")).get("#text") or None
             listens.append(
                 Listen(
                     played_at=played_at,
@@ -378,6 +386,11 @@ class LastfmImporter:
             total_pages=total_pages,
             raw_count=len(raw_tracks),
         )
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """``value`` if it is a JSON object, else an empty one (Last.fm's shapes vary)."""
+    return value if isinstance(value, dict) else {}
 
 
 __all__ = ["LastfmImporter", "LastfmPage", "describe_fetch_error"]

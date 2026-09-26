@@ -501,3 +501,22 @@ async def test_the_run_after_a_partial_one_fetches_the_pages_it_missed(tmp_path:
         assert after.calls[0]["from"] == "40001"
     finally:
         await store.close()
+
+
+async def test_a_page_with_a_single_scrobble_is_imported(tmp_path: Path) -> None:
+    """
+    Last.fm sends a one-scrobble page's ``track`` as a bare object, not a list.
+
+    Found live: the first hourly poll after Music Assistant scrobbled one song failed with
+    "'str' object has no attribute 'get'" (iterating the object's keys).
+    """
+    single = _lastfm_payload(page=1, total_pages=1, n_tracks=1, start_uts=1_790_000_000)
+    single["recenttracks"]["track"] = single["recenttracks"]["track"][0]
+    store = await _new_store(tmp_path)
+    try:
+        importer = LastfmImporter(_ScriptedHttpClient({1: [single]}), "testuser", "fake-key")
+        result = await importer.import_since(store, listener="household")
+        assert result["rows_imported"] == 1
+        assert await store.count_listens("household") == 1
+    finally:
+        await store.close()
