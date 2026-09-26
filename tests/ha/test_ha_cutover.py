@@ -190,3 +190,34 @@ async def test_reconfigure_picks_the_music_assistant_entry(
     assert result["reason"] == "reconfigure_successful"
     await hass.async_block_till_done()
     assert loaded.data["ma_entry_id"] == "ma-prod"
+
+
+async def test_a_replacement_found_at_setup_is_connected_to(
+    hass: HomeAssistant,
+    fake_ma: type[FakeMusicAssistant],  # noqa: F811
+    genome_entry: MockConfigEntry,
+    seeded_store: Path,
+    test_baseline: object,
+) -> None:
+    """
+    The linked MA entry was replaced while Home Assistant was down: capture connects anyway.
+
+    Regression: the relink during setup relied on the entry update reloading the integration,
+    but the update listener was registered only after capture started - no reload, and the
+    attempt returned without connecting or scheduling a retry. Capture stayed dead, silently.
+    """
+    MockConfigEntry(
+        domain="music_assistant",
+        entry_id="ma-entry-NEW",
+        title="Music Assistant",
+        data={"url": "http://ma.local:8095", "token": "ma-token"},
+    ).add_to_hass(hass)
+    genome_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(genome_entry.entry_id)
+    await hass.async_block_till_done()
+    assert genome_entry.data["ma_entry_id"] == "ma-entry-NEW"
+    [client] = fake_ma.instances  # connected once - no reload dropped and re-opened it
+    assert client.url == "http://ma.local:8095"
+    assert (
+        hass.states.get("binary_sensor.listening_genome_music_assistant_connection").state == "on"
+    )

@@ -63,6 +63,8 @@ class ListeningGenomeData:
     capture: MusicAssistantCapture
     _unsubscribers: list[CALLBACK_TYPE] = field(default_factory=list)
     _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+    _close_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _closed: bool = False
 
     @callback
     def async_start_schedules(self) -> None:
@@ -128,6 +130,26 @@ class ListeningGenomeData:
         interrupted = await self.jobs.interrupt_running()
         if interrupted:
             LOGGER.info("Listening Genome stopped while running: %s", ", ".join(interrupted))
+
+    async def async_close(self, _event: Any = None) -> None:
+        """
+        Shut everything down (:meth:`async_shutdown`), then close the store - once.
+
+        Two paths lead here and both may run: Home Assistant stopping (a stop does not unload
+        config entries, and the aiosqlite worker is a non-daemon thread - left open, it holds
+        up the end of every shutdown and skips ``PRAGMA optimize``), and an unload, which can
+        come after the stop. The second caller waits for the first and then does nothing, so
+        nothing touches the store once it is closed: the schedules and capture timers are
+        gone and the in-flight work was cancelled and awaited before the close.
+        """
+        async with self._close_lock:
+            if self._closed:
+                return
+            try:
+                await self.async_shutdown()
+            finally:
+                self._closed = True
+                await self.store.close()
 
     async def async_rebuild(self, *, enrich: bool = True) -> GenomeRebuildResult:
         """
@@ -286,8 +308,18 @@ class ListeningGenomeData:
         return await self.operations.enrich()
 
     @callback
-    def _spawn(self, coro: Coroutine[Any, Any, Any], name: str) -> asyncio.Task[Any]:
-        """Start ``coro`` as an entry background task that unload can cancel and await."""
+    def _spawn(self, coro: Coroutine[Any, Any, Any], name: str) -> asyncio.Task[Any] | None:
+        """
+        Start ``coro`` as an entry background task that unload can cancel and await.
+
+        Not once :meth:`async_close` has begun: shutdown only cancels the tasks that exist when
+        it starts, so work requested after that (a websocket command during Home Assistant's
+        stop) would run against a closed store.
+        """
+        if self._closed or self._close_lock.locked():
+            LOGGER.debug("Listening Genome is shutting down: %s not started", name)
+            coro.close()
+            return None
         task = self.entry.async_create_background_task(self.hass, coro, name)
         if not task.done():
             self._tasks.add(task)

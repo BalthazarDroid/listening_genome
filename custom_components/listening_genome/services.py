@@ -21,6 +21,7 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.service import async_register_admin_service
 
 from .const import (
     ATTR_DRY_RUN,
@@ -107,16 +108,21 @@ def async_register_services(hass: HomeAssistant) -> None:
                 translation_placeholders={"path": path},
             )
 
-    hass.services.async_register(
+    # Admin only: each of these writes into the listening history (the fork import reads any
+    # file Home Assistant may read), which is not something a non-admin user of the house's
+    # dashboards should be able to start. async_register_admin_service raises Unauthorized for
+    # a call made in a non-admin user's context.
+    async_register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_IMPORT_FORK_EXPORT,
         import_fork_export,
         schema=IMPORT_FORK_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
-        DOMAIN, SERVICE_IMPORT_LASTFM, import_lastfm, schema=IMPORT_LASTFM_SCHEMA
+    async_register_admin_service(
+        hass, DOMAIN, SERVICE_IMPORT_LASTFM, import_lastfm, schema=IMPORT_LASTFM_SCHEMA
     )
-    hass.services.async_register(
-        DOMAIN, SERVICE_IMPORT_APPLE_CSV, import_apple_csv, schema=IMPORT_APPLE_SCHEMA
+    async_register_admin_service(
+        hass, DOMAIN, SERVICE_IMPORT_APPLE_CSV, import_apple_csv, schema=IMPORT_APPLE_SCHEMA
     )

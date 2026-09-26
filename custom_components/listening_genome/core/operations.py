@@ -67,6 +67,9 @@ if TYPE_CHECKING:
 # see GenomeOperations._already_captured
 _SAME_PLAY_WINDOW_SECONDS = 120
 
+# parsed Apple listens stored per add_listens call (see GenomeOperations._ingest_apple_csv)
+_APPLE_IMPORT_BATCH = 5000
+
 
 @dataclass(slots=True)
 class PopularityReport:
@@ -488,13 +491,31 @@ class GenomeOperations:
         )
 
     async def _ingest_apple_csv(self, path: str) -> GenomeImportResult:
-        """Parse with whichever Apple parser the header calls for, then store the listens."""
+        """
+        Parse with whichever Apple parser the header calls for, storing the listens in batches.
+
+        Batches of :data:`_APPLE_IMPORT_BATCH`, like the Last.fm importer's pages: a full Apple
+        export is ~300k rows, and holding every parsed :class:`Listen` at once cost ~150 MB on
+        the Home Assistant host. Each batch is one :meth:`GenomeStore.add_listens` transaction;
+        the counters are summed, so the result is the one a single call would have returned.
+        """
         min_seconds = self.service.settings.min_seconds_played
         headers = await asyncio.to_thread(read_csv_header, path)
         parser = parse_daily_tracks if is_daily_tracks_header(headers) else parse_play_activity
         stats = ApplePlayActivityStats()
-        listens = [listen async for listen in parser(path, min_seconds=min_seconds, stats=stats)]
-        result = await self.store.add_listens(listens, listener=LISTENER_HOUSEHOLD)
+        result: GenomeImportResult | None = None
+        batch: list[Listen] = []
+        async for listen in parser(path, min_seconds=min_seconds, stats=stats):
+            batch.append(listen)
+            if len(batch) >= _APPLE_IMPORT_BATCH:
+                result = _merge_import_results(
+                    result, await self.store.add_listens(batch, listener=LISTENER_HOUSEHOLD)
+                )
+                batch = []
+        if batch or result is None:
+            result = _merge_import_results(
+                result, await self.store.add_listens(batch, listener=LISTENER_HOUSEHOLD)
+            )
         # the parser's own tally is the truth for rows read and skipped: the store only ever
         # sees the rows that survived parsing
         result["rows_read"] = stats.rows_read
@@ -607,6 +628,23 @@ def _listen_from_row(row: dict[str, Any]) -> Listen:
         fully_played=None if row["fully_played"] is None else bool(row["fully_played"]),
         confidence=float(row["confidence"]),
     )
+
+
+def _merge_import_results(
+    total: GenomeImportResult | None, batch: GenomeImportResult
+) -> GenomeImportResult:
+    """Fold one batch's :meth:`GenomeStore.add_listens` result into the running total."""
+    if total is None:
+        return batch
+    for key in ("rows_read", "rows_imported", "rows_skipped", "rows_duplicate"):
+        total[key] += batch[key]
+    first, last = batch["first_played_at"], batch["last_played_at"]
+    if first is not None and (total["first_played_at"] is None or first < total["first_played_at"]):
+        total["first_played_at"] = first
+    if last is not None and (total["last_played_at"] is None or last > total["last_played_at"]):
+        total["last_played_at"] = last
+    total["warnings"].extend(batch["warnings"])
+    return total
 
 
 def read_csv_header(path: str) -> list[str]:

@@ -18,6 +18,7 @@ from ..core.constants import (
     LASTFM_BASE_URL,
     LASTFM_INTER_PAGE_DELAY_SECONDS,
     LASTFM_PAGE_LIMIT,
+    LASTFM_RESUME_OVERLAP_SECONDS,
     LASTFM_RETRY_BASE_DELAY_SECONDS,
     LASTFM_RETRY_MAX_ATTEMPTS,
     LASTFM_RETRY_MAX_DELAY_SECONDS,
@@ -148,9 +149,10 @@ class LastfmImporter:
         Backfill completion is recorded only when the sweep actually reaches the last page, in
         the ``settings`` table (no schema change, no migration - see ``store.py``).
 
-        **Incremental mode** - backfill has completed at least once: resumes from the newest
-        stored Last.fm timestamp, exactly as before, so a scheduled poll only fetches what is
-        new.
+        **Incremental mode** - backfill has completed at least once: resumes
+        :data:`LASTFM_RESUME_OVERLAP_SECONDS` before the newest Last.fm timestamp a clean run
+        fetched (see :meth:`_resume_timestamp`), so a scheduled poll fetches what is new plus
+        any late-submitted scrobble from the last two days.
 
         A page-1 failure (in either mode) still raises - nothing was imported yet, so a silent
         "0 rows" success would hide a bad API key or username. A later-page failure (after
@@ -309,7 +311,7 @@ class LastfmImporter:
 
     async def _resume_timestamp(self, store: GenomeStoreProtocol, listener: str) -> int:
         """
-        Return where an incremental import resumes: one second past the last CLEAN run's newest.
+        Return where an incremental import resumes: a window before the last CLEAN run's newest.
 
         The store's resume mark is written only when a run reaches its last page. A run that
         stopped part-way (a page failed after its retries, or ``max_pages`` cut it short) has
@@ -319,15 +321,19 @@ class LastfmImporter:
 
         No mark yet (a database from before 2c): the newest stored Last.fm row, as before.
 
-        One second past it: whether Last.fm's ``from`` includes plays AT that second is not
-        documented, and if it does, the newest play would be fetched again on every poll and -
-        once duplicate removal had deleted it - re-added every time. Two plays in the same
-        second cannot happen, so +1 costs nothing.
+        :data:`LASTFM_RESUME_OVERLAP_SECONDS` behind it, not one second past it: a scrobble
+        carries the time it was PLAYED, and one submitted late (a phone that was offline, a
+        scrobbler that batches) is older than plays already fetched - resuming at the mark
+        would never see it. Everything else the overlap re-reads is a duplicate: rows still
+        stored are absorbed by the dedupe key, and rows duplicate removal already deleted are
+        kept out by their tombstone (``genome_removed_listens``), so they are neither re-added
+        nor counted as imported again. The mark itself never moves backwards (see
+        :meth:`~listening_genome.core.store.GenomeStore.set_lastfm_resume_after`).
         """
         newest = await store.lastfm_resume_after()
         if not newest:
             newest = await store.latest_played_at(listener, SOURCE_LASTFM)
-        return newest + 1 if newest else 0
+        return max(newest - LASTFM_RESUME_OVERLAP_SECONDS, 0) if newest else 0
 
     def _parse_page(self, data: Any) -> LastfmPage:
         """Convert a raw ``user.getRecentTracks`` JSON payload into a :class:`LastfmPage`."""

@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sqlite3
 import time
 from typing import TYPE_CHECKING
 
+import pytest
 from listening_genome.core.constants import (
     DB_TABLE_GENOME_ARTIST_META,
     GENOME_RESULT_SCHEMA_VERSION,
     RESOLVE_ERROR_COOLDOWN_HOURS,
     RESOLVE_STATE_ERROR,
+    RESOLVE_STATE_NOT_FOUND,
+    RESOLVE_STATE_OK,
 )
 from listening_genome.core.models import Listen
 from listening_genome.core.store import ArtistMetaWrite, GenomeStore
@@ -524,10 +528,10 @@ async def test_retry_failed_artists_preserves_resolved_metadata_never_written(
     tmp_path: Path,
 ) -> None:
     """
-    Reusing `upsert_artist_meta_full` is safe because `error` rows never carry real metadata.
+    Retrying an `error` artist only moves its state; an empty row stays empty.
 
-    An `error` row is always written with only `artist_key`/`artist_name` (see
-    `enrich/musicbrainz.py`), so resetting it the same way clobbers nothing.
+    (An `error` row CAN carry metadata - a resolved artist whose re-check failed keeps it; see
+    `test_a_failed_recheck_keeps_the_artists_last_good_metadata`.)
     """
     store = await _new_store(tmp_path)
     try:
@@ -718,9 +722,19 @@ async def test_player_names_uses_the_injected_resolver(tmp_path: Path) -> None:
             ],
             listener="household",
         )
-        assert await store.player_names() == {"kitchen_id": "Kitchen", "garage_id": "garage_id"}
+        unnamed = "Unnamed player (garage)"
+        assert await store.player_names() == {"kitchen_id": "Kitchen", "garage_id": unnamed}
         store.player_name_resolver = None
-        assert await store.player_names() == {"kitchen_id": "kitchen_id", "garage_id": "garage_id"}
+        assert await store.player_names() == {
+            "kitchen_id": "Unnamed player (kitche)",
+            "garage_id": unnamed,
+        }
+        # a name recorded while the player existed outlives the player (a phone that left);
+        # an empty name never overwrites it, and a live name still wins
+        await store.remember_player_names({"garage_id": "Bob's iPhone"})
+        await store.remember_player_names({"garage_id": ""})
+        store.player_name_resolver = {"kitchen_id": "Kitchen"}.get
+        assert await store.player_names() == {"kitchen_id": "Kitchen", "garage_id": "Bob's iPhone"}
     finally:
         await store.close()
 
@@ -1020,5 +1034,288 @@ async def test_changing_lastfm_account_forgets_the_old_accounts_progress(tmp_pat
         assert await store.lastfm_backfill_done() is False
         assert await store.lastfm_resume_after() == 0
         assert await store.lastfm_account() == "someone_else"
+    finally:
+        await store.close()
+
+
+# --- review regressions -----------------------------------------------------------------------
+
+
+async def _artists_without_meta(store: GenomeStore) -> int:
+    """Artists with a stored listen but no genome_artist_meta row (never enriched)."""
+    assert store.database is not None
+    return await store.database.get_count_from_query(
+        "SELECT DISTINCT artist_key FROM genome_listens WHERE artist_key NOT IN "
+        f"(SELECT artist_key FROM {DB_TABLE_GENOME_ARTIST_META})"
+    )
+
+
+async def test_a_cancelled_batch_leaves_no_listen_without_its_artist(tmp_path: Path) -> None:
+    """
+    A batch cancelled part-way is rolled back, and no listen is ever stored without its stub.
+
+    Regression: the listens were inserted first and the ``pending`` stubs created only after
+    their commit. A reload or shutdown cancelling that batch in between left inserted listens
+    in the open transaction; the next unrelated commit on the shared connection (the job map,
+    written by the shutdown itself) persisted them, and a re-import found them already stored
+    and created no stub - those artists were never enriched.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        assert store.database is not None
+        listens = [
+            _listen(played_at=1_700_000_000 + i * 300, artist_key=f"artist{i}", track_key="t")
+            for i in range(200)
+        ]
+        real_execute = store.database.execute
+        statements = 0
+        stalled = asyncio.Event()
+
+        async def execute(query: str, values: dict | None = None) -> object:
+            nonlocal statements
+            statements += 1
+            if statements == 41:  # well into the batch: 40 statements written, uncommitted
+                stalled.set()
+                await asyncio.Event().wait()  # hangs until cancelled
+            return await real_execute(query, values)
+
+        store.database.execute = execute  # type: ignore[method-assign]
+        task = asyncio.create_task(store.add_listens(listens, listener="household"))
+        await stalled.wait()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        store.database.execute = real_execute  # type: ignore[method-assign]
+
+        await store.set_jobs({"x": 1})  # an unrelated commit, as the shutdown makes
+        assert await store.count_listens("household") == 0  # the batch was rolled back
+        # the next poll/import fetches the same page again
+        await store.add_listens(listens, listener="household")
+        assert await store.count_listens("household") == 200
+        assert await _artists_without_meta(store) == 0
+        assert len(await store.pending_artist_keys(limit=1000)) == 200
+    finally:
+        await store.close()
+
+
+async def test_a_listen_already_stored_without_its_stub_gets_one(tmp_path: Path) -> None:
+    """An artist stranded by the old ordering is queued as soon as any listen of it is seen."""
+    store = await _new_store(tmp_path)
+    try:
+        await store.add_listens([_listen()], listener="household")
+        assert store.database is not None
+        await store.database.execute(f"DELETE FROM {DB_TABLE_GENOME_ARTIST_META}")
+        await store.database.commit()
+        assert await _artists_without_meta(store) == 1
+        result = await store.add_listens([_listen()], listener="household")
+        assert result["rows_duplicate"] == 1
+        assert await _artists_without_meta(store) == 0
+    finally:
+        await store.close()
+
+
+async def test_a_failing_batch_is_rolled_back(tmp_path: Path) -> None:
+    """An exception mid-batch leaves none of the batch for a later commit to persist."""
+    store = await _new_store(tmp_path)
+    try:
+        assert store.database is not None
+        listens = [_listen(played_at=1_700_000_000 + i * 300, track_key=f"t{i}") for i in range(5)]
+        real_execute = store.database.execute
+        statements = 0
+
+        async def execute(query: str, values: dict | None = None) -> object:
+            nonlocal statements
+            statements += 1
+            if statements == 5:
+                raise sqlite3.OperationalError("disk I/O error")
+            return await real_execute(query, values)
+
+        store.database.execute = execute  # type: ignore[method-assign]
+        with pytest.raises(sqlite3.OperationalError):
+            await store.add_listens(listens, listener="household")
+        store.database.execute = real_execute  # type: ignore[method-assign]
+        await store.set_jobs({})
+        assert await store.count_listens("household") == 0
+        assert await store.pending_artist_keys() == []
+    finally:
+        await store.close()
+
+
+_OK_ROW: ArtistMetaWrite = {
+    "artist_key": "sigurros",
+    "artist_name": "Sigur Rós",
+    "mbid": "f6f2326f-6b25-4170-b89d-e235b25508e8",
+    "mb_tags": [{"name": "post-rock", "count": 8}],
+    "genres": ["rock", "ambient"],
+    "begin_year": 1994,
+    "first_release_year": 1997,
+    "country": "IS",
+    "lb_listeners": 118422,
+    "lb_listen_count": 4821334,
+}
+
+
+async def _resolved_row(store: GenomeStore) -> dict[str, object]:
+    assert store.database is not None
+    rows = await store.database.get_rows_from_query(
+        f"SELECT * FROM {DB_TABLE_GENOME_ARTIST_META} WHERE artist_key = 'sigurros'"
+    )
+    return dict(rows[0])
+
+
+@pytest.mark.parametrize("state", [RESOLVE_STATE_ERROR, RESOLVE_STATE_NOT_FOUND])
+async def test_a_failed_recheck_keeps_the_artists_last_good_metadata(
+    tmp_path: Path, state: str
+) -> None:
+    """
+    A re-check of a resolved artist that errors or finds nothing only moves its state.
+
+    Regression: ``ok`` rows come due again after RESOLVE_OK_COOLDOWN_DAYS, and an ``error``
+    (MusicBrainz 503) or ``not_found`` result was written as a whole row of NULLs - the
+    artist lost its genres, mbid and popularity until some later re-check succeeded.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        await store.add_listens([_listen()], listener="household")
+        await store.upsert_artist_meta_full([_OK_ROW], state=RESOLVE_STATE_OK)
+        before = await _resolved_row(store)
+        # the shape musicbrainz.py writes for a failed / empty lookup
+        await store.upsert_artist_meta_full(
+            [{"artist_key": "sigurros", "artist_name": "Sigur Rós"}], state=state
+        )
+        after = await _resolved_row(store)
+        assert after["resolve_state"] == state
+        unchanged = {k: v for k, v in before.items() if k not in ("resolve_state", "resolved_at")}
+        assert {k: after[k] for k in unchanged} == unchanged
+        meta = (await store.get_artist_meta(["sigurros"]))["sigurros"]
+        assert meta.genres == ("rock", "ambient")
+        assert meta.lb_listeners == 118422
+        # and retrying it (error) keeps the metadata too
+        await store.retry_failed_artists()
+        after_retry = await _resolved_row(store)
+        assert {k: after_retry[k] for k in unchanged} == unchanged
+    finally:
+        await store.close()
+
+
+async def test_a_successful_recheck_keeps_listenbrainz_popularity(tmp_path: Path) -> None:
+    """MusicBrainz has no popularity data: its write must not null what ListenBrainz found."""
+    store = await _new_store(tmp_path)
+    try:
+        await store.upsert_artist_meta_full([_OK_ROW], state=RESOLVE_STATE_OK)
+        fresh: ArtistMetaWrite = {
+            "artist_key": "sigurros",
+            "artist_name": "Sigur Rós",
+            "mbid": "f6f2326f-6b25-4170-b89d-e235b25508e8",
+            "mb_tags": [{"name": "ambient", "count": 9}],
+            "genres": ["ambient"],
+            "begin_year": 1994,
+            "country": "IS",
+        }
+        await store.upsert_artist_meta_full([fresh], state=RESOLVE_STATE_OK)
+        meta = (await store.get_artist_meta(["sigurros"]))["sigurros"]
+        assert meta.genres == ("ambient",)  # the new result wins where it has data
+        assert (meta.lb_listeners, meta.lb_listen_count) == (118422, 4821334)
+        assert meta.first_release_year == 1997
+    finally:
+        await store.close()
+
+
+async def test_an_error_on_a_new_or_pending_artist_is_written_as_before(tmp_path: Path) -> None:
+    """A stub has nothing to keep: it takes the error state (and any data the write carries)."""
+    store = await _new_store(tmp_path)
+    try:
+        await store.add_listens([_listen()], listener="household")  # pending stub
+        await store.upsert_artist_meta_full(
+            [{"artist_key": "sigurros", "artist_name": "Sigur Rós", "lb_listeners": 5}],
+            state=RESOLVE_STATE_ERROR,
+        )
+        await store.upsert_artist_meta_full(
+            [{"artist_key": "new", "artist_name": "New"}], state=RESOLVE_STATE_NOT_FOUND
+        )
+        meta = await store.get_artist_meta(["sigurros", "new"])
+        assert meta["sigurros"].lb_listeners == 5
+        assert meta["new"].mbid is None
+        assert (await store.artist_resolution_counts()) == {RESOLVE_STATE_ERROR: 1}
+    finally:
+        await store.close()
+
+
+def _sqlite_variable_limit() -> int:
+    connection = sqlite3.connect(":memory:")
+    try:
+        return connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    finally:
+        connection.close()
+
+
+async def test_artist_meta_reads_past_sqlites_variable_limit(tmp_path: Path) -> None:
+    """
+    A rebuild reads every artist's metadata at once; more artists than SQLite has variables.
+
+    Regression: one unchunked ``IN (...)`` - beyond 32,766 distinct artists every rebuild
+    failed with "too many SQL variables", forever.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        keys = [f"artist{i}" for i in range(_sqlite_variable_limit() + 1)]
+        await store.queue_artist_lookups((key, key) for key in keys[-3:])
+        await store.upsert_artist_meta_full(
+            [{"artist_key": keys[-1], "artist_name": "Last", "genres": ["rock"]}], state="ok"
+        )
+        meta = await store.get_artist_meta(keys)
+        assert set(meta) == set(keys[-3:])
+        assert await store.artist_genres(keys) == {keys[-1]: ("rock",)}
+        for key in keys[-3:-1]:
+            await store.upsert_artist_meta_full(
+                [{"artist_key": key, "artist_name": key}], state=RESOLVE_STATE_ERROR
+            )
+        assert await store.retry_failed_artists(keys) == 2
+    finally:
+        await store.close()
+
+
+async def test_removed_lastfm_rows_are_tombstoned_and_kept_out(tmp_path: Path) -> None:
+    """
+    A Last.fm row duplicate removal deleted does not come back when it is fetched again.
+
+    The Last.fm poll re-reads a 48-hour window behind its mark (late scrobbles), so removed
+    rows ARE fetched again; each round used to re-insert and re-remove them, and report both.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        day_start = (_NOON // _DAY) * _DAY
+        await store.add_listens([_listen(played_at=day_start + 60)], listener="household")
+        scrobbles = [_listen(source="lastfm", played_at=day_start + 60 * k) for k in (2, 5)]
+        kept = _listen(source="lastfm", played_at=day_start + 600, track_key="other")
+        await store.add_listens([*scrobbles, kept], listener="household")
+        removed = await store.remove_duplicate_listens("household")
+        assert removed.apple == 2
+        assert await store.removed_listen_count() == 2
+
+        again = await store.add_listens([*scrobbles, kept], listener="household")
+        assert (again["rows_imported"], again["rows_duplicate"]) == (0, 3)
+        assert await _sources(store) == {"apple_export": 1, "lastfm": 1}
+        assert (await store.remove_duplicate_listens("household")).total == 0
+
+        # a clear forgets them with the listens: a re-import after it brings everything back
+        await store.clear("household")
+        assert await store.removed_listen_count() == 0
+        back = await store.add_listens(scrobbles, listener="household")
+        assert back["rows_imported"] == 2
+    finally:
+        await store.close()
+
+
+async def test_only_lastfm_rows_are_tombstoned(tmp_path: Path) -> None:
+    """Tombstones are for Last.fm re-fetches; nothing else is ever kept out by one."""
+    store = await _new_store(tmp_path)
+    try:
+        await store.add_listens([_listen(), _listen(source="lastfm")], listener="household")
+        assert store.database is not None
+        rows = await store.database.get_rows_from_query("SELECT id FROM genome_listens")
+        await store._delete_listens([int(row["id"]) for row in rows])
+        assert await store.removed_listen_count() == 1
+        assert (await store.add_listens([_listen()], listener="household"))["rows_imported"] == 1
     finally:
         await store.close()

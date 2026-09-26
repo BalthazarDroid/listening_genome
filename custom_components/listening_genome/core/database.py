@@ -116,6 +116,7 @@ class GenomeDatabase:
         :param db_path: Filesystem path of the SQLite database file.
         """
         self.db_path = db_path
+        self._closed = False
 
     async def setup(
         self,
@@ -157,10 +158,21 @@ class GenomeDatabase:
         await self.commit()
 
     async def close(self) -> None:
-        """Close db connection on exit."""
-        await self.execute("PRAGMA optimize;")
-        await self.commit()
-        await self._db.close()
+        """
+        Close db connection on exit; a second call does nothing.
+
+        Idempotent because two paths close it: Home Assistant stopping, and an unload that may
+        follow the stop. The connection object is kept, so a late caller gets aiosqlite's own
+        "no active connection" error rather than something less telling.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            await self.execute("PRAGMA optimize;")
+            await self.commit()
+        finally:
+            await self._db.close()
 
     async def get_rows_from_query(
         self,
@@ -277,6 +289,16 @@ class GenomeDatabase:
     async def commit(self) -> None:
         """Commit the current transaction."""
         return await self._db.commit()
+
+    async def rollback(self) -> None:
+        """
+        Discard the current transaction's uncommitted writes.
+
+        Not one of MA's eleven: a multi-statement write that fails (or is cancelled) half-way
+        uses it so its partial writes are not committed later by an unrelated ``commit`` on
+        this shared connection.
+        """
+        return await self._db.rollback()
 
 
 def _get_host_memory_gb() -> float:

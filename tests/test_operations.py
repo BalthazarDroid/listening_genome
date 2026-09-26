@@ -9,6 +9,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from conftest import FIXTURES_DIR
 from listening_genome.baseline import load_baseline
 from listening_genome.core.constants import (
     DEFAULT_OBSCURITY_PERCENTILE,
@@ -313,3 +314,44 @@ async def test_percentile_choices_are_the_shipped_baselines() -> None:
     baseline = await load_baseline()
     assert tuple(sorted(baseline.listener_percentiles)) == OBSCURITY_PERCENTILE_CHOICES
     assert DEFAULT_OBSCURITY_PERCENTILE in OBSCURITY_PERCENTILE_CHOICES
+
+
+async def test_an_apple_import_is_stored_in_batches_with_the_same_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The parsed listens reach the store a batch at a time; the result is unchanged by it.
+
+    Regression: every parsed listen was collected into one list first - ~150 MB for a real
+    306k-row export, all held at once on the Home Assistant host.
+    """
+    from listening_genome.core import operations as operations_module
+
+    csv_path = str(FIXTURES_DIR / "apple_daily_tracks.csv")
+
+    async def run(name: str, batch: int) -> tuple[dict[str, Any], list[int]]:
+        monkeypatch.setattr(operations_module, "_APPLE_IMPORT_BATCH", batch)
+        folder = tmp_path / name
+        await asyncio.to_thread(folder.mkdir)
+        store = GenomeStore(str(folder))
+        await store.setup()
+        sizes: list[int] = []
+        real_add = store.add_listens
+
+        async def add_listens(listens: Any, **kwargs: Any) -> Any:
+            sizes.append(len(listens))
+            return await real_add(listens, **kwargs)
+
+        store.add_listens = add_listens  # type: ignore[method-assign]
+        try:
+            result = await _operations(store, None).import_apple(csv_path, display_name="x.csv")
+        finally:
+            await store.close()
+        return dict(result), sizes
+
+    whole, whole_sizes = await run("whole", 1_000_000)
+    batched, batched_sizes = await run("batched", 2)
+    assert len(whole_sizes) == 1 and whole_sizes[0] > 2
+    assert max(batched_sizes) <= 2
+    assert sum(batched_sizes) == whole_sizes[0]
+    assert batched == whole

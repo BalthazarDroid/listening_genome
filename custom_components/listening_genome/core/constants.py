@@ -21,6 +21,8 @@ DB_TABLE_GENOME_LISTENS: Final[str] = "genome_listens"
 DB_TABLE_GENOME_ARTIST_META: Final[str] = "genome_artist_meta"
 DB_TABLE_GENOME_CACHE: Final[str] = "genome_cache"
 DB_TABLE_SETTINGS: Final[str] = "settings"
+# dedupe keys of Last.fm rows duplicate removal deleted, so a re-fetch cannot bring them back
+DB_TABLE_GENOME_REMOVED_LISTENS: Final[str] = "genome_removed_listens"
 
 LISTENER_HOUSEHOLD: Final[str] = "household"
 
@@ -170,6 +172,12 @@ LASTFM_BASE_URL: Final[str] = "https://ws.audioscrobbler.com/2.0/"
 LASTFM_API_KEY_PATTERN: Final[str] = r"^[0-9a-fA-F]{32}$"
 LASTFM_PAGE_LIMIT: Final[int] = 200
 LASTFM_INTER_PAGE_DELAY_SECONDS: Final[float] = 0.25
+# An incremental poll re-reads this far behind the resume mark. A scrobble is stamped with the
+# time it was PLAYED, not the time it reached Last.fm, so a phone that was offline (or a
+# scrobbler that caches) submits plays older than the newest one already fetched; resuming at
+# the mark itself would never see them. Rows fetched again are absorbed by the dedupe key, and
+# rows duplicate removal deleted by their tombstone (``genome_removed_listens``).
+LASTFM_RESUME_OVERLAP_SECONDS: Final[int] = 48 * 3600
 
 # A page fetch that fails with a transient status (429/500/502/503/504) or a network-level
 # error (no status at all - a timeout, a dropped connection) is retried this many times with

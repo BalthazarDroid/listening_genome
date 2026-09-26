@@ -6,7 +6,9 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from listening_genome.core.constants import LASTFM_RESUME_OVERLAP_SECONDS
 from listening_genome.core.errors import LastfmApiError
+from listening_genome.core.models import Listen
 from listening_genome.core.store import GenomeStore
 from listening_genome.importers.lastfm import LastfmImporter
 
@@ -14,6 +16,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from conftest import FixtureHttpClient
+
+
+# a realistic scrobble time: the resume window reaches two days back from the mark
+_T0 = 1_790_000_000
 
 
 def _lastfm_payload(*, page: int, total_pages: int, n_tracks: int, start_uts: int) -> Any:
@@ -433,14 +439,14 @@ async def test_incremental_resume_survives_duplicate_removal(tmp_path: Path) -> 
     store = await _new_store(tmp_path)
     try:
         first = _ScriptedHttpClient(
-            {1: [_lastfm_payload(page=1, total_pages=1, n_tracks=3, start_uts=10_000)]}
+            {1: [_lastfm_payload(page=1, total_pages=1, n_tracks=3, start_uts=_T0)]}
         )
         await LastfmImporter(first, "testuser", "fake-key").import_since(
             store, listener="household"
         )
         assert await store.lastfm_backfill_done() is True
-        # the newest row (uts 10_002) is removed, as duplicate removal would
-        await store.database.execute("DELETE FROM genome_listens WHERE played_at = 10002")
+        # the newest row (uts _T0 + 2) is removed, as duplicate removal would
+        await store.database.execute(f"DELETE FROM genome_listens WHERE played_at = {_T0 + 2}")
         await store.database.commit()
         second = _ScriptedHttpClient(
             {1: [_lastfm_payload(page=1, total_pages=1, n_tracks=0, start_uts=0)]}
@@ -448,7 +454,7 @@ async def test_incremental_resume_survives_duplicate_removal(tmp_path: Path) -> 
         await LastfmImporter(second, "testuser", "fake-key").import_since(
             store, listener="household"
         )
-        assert second.calls[0]["from"] == "10003"
+        assert second.calls[0]["from"] == str(_T0 + 2 - LASTFM_RESUME_OVERLAP_SECONDS)
     finally:
         await store.close()
 
@@ -481,24 +487,24 @@ async def test_the_run_after_a_partial_one_fetches_the_pages_it_missed(tmp_path:
     store = await _new_store(tmp_path)
     try:
         await store.mark_lastfm_backfill_done()
-        await store.set_lastfm_resume_after(40_000)
+        await store.set_lastfm_resume_after(_T0)
         partial = _ScriptedHttpClient(
             {
-                1: [_lastfm_payload(page=1, total_pages=2, n_tracks=2, start_uts=50_000)],
+                1: [_lastfm_payload(page=1, total_pages=2, n_tracks=2, start_uts=_T0 + 10_000)],
                 2: [_StatusError(404)],
             }
         )
         await LastfmImporter(partial, "testuser", "fake-key").import_since(
             store, listener="household"
         )
-        assert await store.latest_played_at("household", "lastfm") == 50_001
+        assert await store.latest_played_at("household", "lastfm") == _T0 + 10_001
         after = _ScriptedHttpClient(
             {1: [_lastfm_payload(page=1, total_pages=1, n_tracks=0, start_uts=0)]}
         )
         await LastfmImporter(after, "testuser", "fake-key").import_since(
             store, listener="household"
         )
-        assert after.calls[0]["from"] == "40001"
+        assert after.calls[0]["from"] == str(_T0 - LASTFM_RESUME_OVERLAP_SECONDS)
     finally:
         await store.close()
 
@@ -518,5 +524,132 @@ async def test_a_page_with_a_single_scrobble_is_imported(tmp_path: Path) -> None
         result = await importer.import_since(store, listener="household")
         assert result["rows_imported"] == 1
         assert await store.count_listens("household") == 1
+    finally:
+        await store.close()
+
+
+class _LastfmHistory:
+    """Last.fm itself, in miniature: a scrobble list served newest first, honouring ``from``."""
+
+    def __init__(self) -> None:
+        self.scrobbles: list[tuple[int, str, str]] = []
+        self.calls: list[dict[str, str]] = []
+
+    async def get_json(
+        self, url: str, *, params: dict[str, str] | None = None, headers: Any = None
+    ) -> Any:
+        params = params or {}
+        self.calls.append(dict(params))
+        since = int(params.get("from", 0))
+        rows = sorted((s for s in self.scrobbles if s[0] >= since), reverse=True)
+        return {
+            "recenttracks": {
+                "@attr": {"page": "1", "totalPages": "1"},
+                "track": [
+                    {
+                        "artist": {"#text": artist},
+                        "name": track,
+                        "album": {"#text": ""},
+                        "date": {"uts": str(uts)},
+                    }
+                    for uts, artist, track in rows
+                ],
+            }
+        }
+
+    async def post_json(self, url: str, *, json: Any, headers: Any = None) -> Any:
+        raise AssertionError("not used by these tests")
+
+
+async def test_a_scrobble_submitted_late_is_still_imported(tmp_path: Path) -> None:
+    """
+    A play scrobbled after newer ones (a phone that was offline) reaches the history.
+
+    Regression: incremental polls asked for ``from = mark + 1``, and a late scrobble carries
+    the time it was PLAYED - older than the mark - so it was never imported at all.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        lastfm = _LastfmHistory()
+        importer = LastfmImporter(lastfm, "testuser", "fake-key")
+        lastfm.scrobbles = [(_T0, "Alpha", "One"), (_T0 + 3000, "Beta", "Two")]
+        await importer.import_since(store, listener="household")  # backfill
+        lastfm.scrobbles += [(_T0 + 2000, "Gamma", "Three"), (_T0 + 6000, "Delta", "Four")]
+        result = await importer.import_since(store, listener="household")
+        assert result["rows_imported"] == 2
+        stored = sorted([listen.artist_name async for listen in store.iter_listens("household")])
+        assert stored == ["Alpha", "Beta", "Delta", "Gamma"]
+        # later polls re-read the window but add (and report) nothing
+        for _ in range(3):
+            again = await importer.import_since(store, listener="household")
+            assert again["rows_imported"] == 0
+        assert await store.count_listens("household") == 4
+        assert await store.lastfm_resume_after() == _T0 + 6000
+    finally:
+        await store.close()
+
+
+async def test_a_removed_duplicate_fetched_again_stays_out(tmp_path: Path) -> None:
+    """
+    The overlap window re-fetches rows duplicate removal deleted; they stay deleted, uncounted.
+
+    Also the convergence of rows removed BEFORE tombstones existed (the one-time Apple cleanup
+    on the real history): one inside the window comes back once, the same Apple rule removes
+    it again - now with a tombstone - and it stays out from then on.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        lastfm = _LastfmHistory()
+        importer = LastfmImporter(lastfm, "testuser", "fake-key")
+        lastfm.scrobbles = [
+            (_T0, "Sigur Rós", "Hoppípolla"),
+            (_T0 + 600, "Sigur Rós", "Glósóli"),
+            (_T0 + 1200, "Kasabian", "Club Foot"),
+        ]
+        await importer.import_since(store, listener="household")
+        # Apple Music's export recorded both Sigur Rós plays that day
+        apple = [
+            Listen(
+                played_at=_T0 - _T0 % 86400 + 3600,
+                artist_key="sigur ros",
+                artist_name="Sigur Rós",
+                track_key=track_key,
+                track_name=track_key,
+                album_name=None,
+                source="apple_export",
+                player_id=None,
+                duration_ms=None,
+                played_ms=None,
+                fully_played=True,
+                confidence=1.0,
+            )
+            for track_key in ("hoppipolla", "glosoli")
+        ]
+        await store.add_listens(apple, listener="household")
+        removed = await store.remove_duplicate_listens("household")
+        assert removed.apple == 2
+        # simulate one of them removed before tombstones existed
+        assert store.database is not None
+        await store.database.execute(
+            "DELETE FROM genome_removed_listens WHERE dedupe_key LIKE '%glosoli%'"
+        )
+        await store.database.commit()
+
+        mark = await store.max_listen_id()
+        poll = await importer.import_since(store, listener="household")
+        assert (poll["rows_imported"], poll["rows_duplicate"]) == (1, 2)  # glosoli, once
+        again = await store.remove_duplicate_listens(
+            "household",
+            since=poll["first_played_at"],
+            until=poll["last_played_at"],
+            added_after_id=mark,
+        )
+        assert again.apple == 1
+
+        for _ in range(3):
+            poll = await importer.import_since(store, listener="household")
+            assert (poll["rows_imported"], poll["rows_duplicate"]) == (0, 3)
+        counts = await store.source_counts("household")
+        assert counts == {"apple_export": 2, "lastfm": 1}
     finally:
         await store.close()

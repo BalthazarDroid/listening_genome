@@ -21,6 +21,7 @@ from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 
 from .baseline import load_baseline
+from .compat import preload_transliteration
 from .const import DOMAIN, PLATFORMS, STORAGE_DIRNAME
 from .core.constants import (
     GENOME_ENRICHMENT_BATCH_LIMIT,
@@ -80,6 +81,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ListeningGenomeConfigEnt
     """Open the store, load the baseline, serve the genome, and start the schedules."""
     storage_dir = hass.config.path(STORAGE_DIRNAME)
     await hass.async_add_executor_job(lambda: os.makedirs(storage_dir, exist_ok=True))
+    # artist keys are built on the event loop; their lookup tables must not be read there
+    await hass.async_add_executor_job(preload_transliteration)
 
     # the version MusicBrainz sees is the one manifest.json states, read through HA's loader
     integration = await async_get_integration(hass, DOMAIN)
@@ -169,13 +172,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ListeningGenomeConfigEnt
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     runtime.async_start_schedules()
     await async_register_panel(hass)
-    capture.async_start()
-    # a stop does not unload entries: write the plays still open while the store is still open
-    entry.async_on_unload(
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, capture.async_handle_stop)
-    )
-    runtime.async_request_duplicate_cleanup()
+    # before the capture starts: its first attempt may already change the entry (following a
+    # replaced Music Assistant entry, see live_capture._relink)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    capture.async_start()
+    # a stop does not unload entries: write the plays still open, finish or interrupt what is
+    # running, then close the store (after all of that - the writes need it). async_listen, not
+    # async_listen_once: an unload after the stop removes the listener, and removing a
+    # once-listener that already fired is logged as an error. The stop only fires once.
+    entry.async_on_unload(hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, runtime.async_close))
+    runtime.async_request_duplicate_cleanup()
     return True
 
 
@@ -184,9 +190,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ListeningGenomeConfigEn
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         async_remove_panel(hass)
-        runtime = entry.runtime_data
-        await runtime.async_shutdown()
-        await runtime.store.close()
+        # a no-op when Home Assistant's stop already closed everything
+        await entry.runtime_data.async_close()
     return unloaded
 
 
@@ -196,8 +201,14 @@ async def _async_options_updated(hass: HomeAssistant, entry: ListeningGenomeConf
 
     The reload re-registers the schedules with the new hour and enrichment toggle. Without the
     rebuild, a changed half-life or percentile would not show until the next daily run.
+
+    A change to the entry's DATA alone is the Music Assistant link moving to a replacement
+    entry (``live_capture._relink``): the capture already follows it, so reloading would only
+    drop and re-open that connection. (Reconfigure reloads by itself.)
     """
     before = entry.runtime_data.settings
+    if GenomeServiceSettings.from_options(entry.options) == before:
+        return
     await hass.config_entries.async_reload(entry.entry_id)
     if entry.state is not ConfigEntryState.LOADED:
         return

@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import functools
+import importlib.resources
 import json as _stdlib_json
 import re
 import time
@@ -79,6 +80,39 @@ class ThrottleError(Exception):
 # =============================================================================
 # Vendored from music_assistant_models/helpers.py
 # =============================================================================
+
+
+#: the anyascii package holding its lookup tables, one file per 256-codepoint block, each named
+#: by its block number in three hex digits (``000`` .. ``e00`` in anyascii 0.3)
+_TRANSLITERATION_DATA_PACKAGE = "anyascii._data"
+
+
+def preload_transliteration() -> None:
+    """
+    Read EVERY transliteration table now (blocking - call it in an executor).
+
+    anyascii reads a block's table from disk the first time a character from that block is
+    transliterated. Artist and track keys are built on Home Assistant's event loop, so a name
+    in any script not loaded yet - CJK, Hangul, Thai, emoji - would read a file on the loop.
+    Preloading only a handful of common blocks left all of those. Every table file in the
+    package is loaded, through anyascii's own code path (one character from each block), so
+    nothing depends on how anyascii caches them. Measured on anyascii 0.3.3 (640 tables,
+    2.6 MB on disk): about 55 ms, and 6.4 MB of Python objects (+4.4 MB RSS), once per start.
+
+    Only a codepoint in a block anyascii has NO table for still makes it look on disk (once;
+    it then caches the empty block) - those characters have no transliteration anyway.
+    """
+    blocks = [
+        int(resource.name, 16)
+        for resource in importlib.resources.files(_TRANSLITERATION_DATA_PACKAGE).iterdir()
+        if _is_block_name(resource.name)
+    ]
+    anyascii("".join(chr((block << 8) | 0x80) for block in sorted(blocks)))
+
+
+def _is_block_name(name: str) -> bool:
+    """Whether a resource in anyascii's data package is a block table (``"0a3"``)."""
+    return len(name) == 3 and all(char in "0123456789abcdef" for char in name)
 
 
 def create_safe_string(input_str: str, lowercase: bool = True, replace_space: bool = False) -> str:

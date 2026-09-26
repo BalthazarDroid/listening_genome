@@ -134,7 +134,8 @@ class MusicAssistantCapture:
         """
         Close the connection, then write every play still open and wait for pending writes.
 
-        Called on unload BEFORE the store closes: the writes need it.
+        Called on unload and when Home Assistant stops, BEFORE the store closes: the writes
+        need it (see ``ListeningGenomeData.async_close``).
         """
         self._stopped = True
         if self._unsub_flush is not None:
@@ -188,9 +189,11 @@ class MusicAssistantCapture:
             return
         ma_entry = self.hass.config_entries.async_get_entry(self.entry.data[CONF_MA_ENTRY_ID])
         if ma_entry is None and self._relink():
-            # the entry's data changed: Home Assistant reloads this integration, and the new
-            # capture connects to the entry it now points at
-            return
+            # connect to the replacement now. Relying on the data change to reload the
+            # integration left capture dead when the relink happened during setup (no update
+            # listener yet, so no reload - and no retry either); the update listener now
+            # leaves a link-only change alone, since the capture follows it here itself
+            ma_entry = self.hass.config_entries.async_get_entry(self.entry.data[CONF_MA_ENTRY_ID])
         url = ma_entry.data.get(CONF_URL) if ma_entry is not None else None
         if not url or ma_entry is None:
             self._set_disconnected(
@@ -309,7 +312,7 @@ class MusicAssistantCapture:
         """Take every player's name once the client has fetched the initial state."""
         await init_ready.wait()
         for player in client.players:
-            self.player_names[player.player_id] = player.name
+            self._take_name(player)
 
     @callback
     def _on_player_event(self, event: MassEvent) -> None:
@@ -319,7 +322,12 @@ class MusicAssistantCapture:
             return
         player = client.players.get(event.object_id)
         if player is not None:
-            self.player_names[player.player_id] = player.name
+            self._take_name(player)
+
+    def _take_name(self, player: Any) -> None:
+        """Keep a player's name - only a real one; an empty name never replaces a known one."""
+        if label := _player_label(player):
+            self.player_names[player.player_id] = label
 
     @callback
     def _on_media_item_played(self, event: MassEvent) -> None:
@@ -334,15 +342,6 @@ class MusicAssistantCapture:
             LOGGER.debug("Ignoring a media_item_played event that is not a usable report")
             return
         self._write(self.tracker.report(report, self.clock()))
-
-    async def async_handle_stop(self, _event: Any) -> None:
-        """
-        Home Assistant is stopping: write the plays still open.
-
-        A stop does not unload config entries - it only cancels their background tasks - so
-        without this, whatever was playing (or paused) at a restart would be lost.
-        """
-        await self.async_stop()
 
     @callback
     def _handle_flush_interval(self, now: Any) -> None:
@@ -372,6 +371,18 @@ class MusicAssistantCapture:
             LOGGER.exception("Could not store %d captured play(s)", len(captured))
             return
         LOGGER.debug("Stored %d captured play(s), %d new", len(captured), added)
+        # remember who played it: a phone's or browser's player exists in Music Assistant only
+        # while it is connected, so its name has to be kept now or it is gone for good
+        names = {
+            listen.player_id: self.player_names[listen.player_id]
+            for listen in (item.listen for item in captured)
+            if listen.player_id and listen.player_id in self.player_names
+        }
+        if names:
+            try:
+                await self.operations.store.remember_player_names(names)
+            except Exception:
+                LOGGER.debug("Could not remember player names", exc_info=True)
 
     @callback
     def _set_disconnected(self, reason: str) -> None:
@@ -386,6 +397,25 @@ class MusicAssistantCapture:
     def _notify(self) -> None:
         for update_callback in list(self._listeners):
             update_callback()
+
+
+_UNKNOWN_DEVICE_INFO = frozenset({"", "unknown model", "unknown manufacturer"})
+
+
+def _player_label(player: Any) -> str | None:
+    """
+    A name for a Music Assistant player: its own, else what its device info says it is.
+
+    Some players (a phone playing through the Music Assistant app, a browser tab) can arrive
+    with an empty name; the model is better than nothing.
+    """
+    name = str(getattr(player, "name", "") or "").strip()
+    if name:
+        return name
+    info = getattr(player, "device_info", None)
+    parts = [str(getattr(info, attr, "") or "").strip() for attr in ("manufacturer", "model")]
+    parts = [part for part in parts if part.casefold() not in _UNKNOWN_DEVICE_INFO]
+    return " ".join(dict.fromkeys(parts)) or None
 
 
 __all__ = ["CaptureStatus", "MusicAssistantCapture"]

@@ -10,13 +10,21 @@ musicbrainz.org through the injected, throttled client.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, Any
 
+from listening_genome.core.constants import (
+    RESOLVE_OK_COOLDOWN_DAYS,
+    RESOLVE_STATE_ERROR,
+    RESOLVE_STATE_OK,
+)
+from listening_genome.core.models import ArtistMeta, Listen
 from listening_genome.core.store import GenomeStore
 from listening_genome.enrich.listenbrainz import artist_popularity
 from listening_genome.enrich.musicbrainz import (
     enrich_pending_artists,
     resolve_artist,
+    run_musicbrainz_pass,
 )
 
 if TYPE_CHECKING:
@@ -137,3 +145,67 @@ async def test_musicbrainz_lookups_go_to_musicbrainz_org_not_the_ma_mirror() -> 
     assert seen, "no MusicBrainz request was made at all"
     hosts = {urlsplit(url).hostname for url in seen}
     assert hosts == {"musicbrainz.org"}, f"MusicBrainz requests went to {hosts}"
+
+
+class _MusicBrainzDown:
+    """MusicBrainz answering 503 to everything."""
+
+    async def get_json(self, url: str, *, params: Any = None, headers: Any = None) -> Any:
+        err = Exception("503 Service Unavailable")
+        err.status = 503  # type: ignore[attr-defined]
+        raise err
+
+    async def post_json(self, url: str, *, json: Any, headers: Any = None) -> Any:
+        raise AssertionError("not used")
+
+
+async def test_a_recheck_during_an_outage_keeps_what_was_known(tmp_path: Path) -> None:
+    """
+    An ``ok`` artist due for its periodic re-check keeps its metadata when MusicBrainz fails.
+
+    Regression: the pass wrote the error as a whole row of NULLs - mbid, genres, begin year
+    and ListenBrainz popularity gone until a later re-check happened to succeed.
+    """
+    store = await _new_store(tmp_path)
+    try:
+        await store.add_listens(
+            [
+                Listen(
+                    played_at=1_700_000_000,
+                    artist_key="sigur ros",
+                    artist_name="Sigur Ros",
+                    track_key="t",
+                    track_name="T",
+                    album_name=None,
+                    source="lastfm",
+                    player_id=None,
+                    duration_ms=None,
+                    played_ms=None,
+                    fully_played=True,
+                    confidence=1.0,
+                )
+            ],
+            listener="household",
+        )
+        known = ArtistMeta(
+            artist_key="sigur ros",
+            artist_name="Sigur Ros",
+            mbid="abc",
+            genres=("rock", "ambient"),
+            first_release_year=1997,
+            begin_year=1994,
+            lb_listeners=900_000,
+            lb_listen_count=5,
+        )
+        await store.upsert_artist_meta([known], state=RESOLVE_STATE_OK)
+        assert store.database is not None
+        due = int(time.time()) - (RESOLVE_OK_COOLDOWN_DAYS + 1) * 86400
+        await store.database.execute("UPDATE genome_artist_meta SET resolved_at = :t", {"t": due})
+        await store.database.commit()
+
+        report = await run_musicbrainz_pass(store, client=_MusicBrainzDown(), limit=10)
+        assert report.failed == 1
+        assert (await store.get_artist_meta(["sigur ros"]))["sigur ros"] == known
+        assert await store.artist_resolution_counts() == {RESOLVE_STATE_ERROR: 1}
+    finally:
+        await store.close()

@@ -18,7 +18,9 @@ through the same private helper.
 
 from __future__ import annotations
 
+import asyncio
 import bisect
+import contextlib
 import os
 import time
 from dataclasses import dataclass
@@ -30,6 +32,7 @@ from .constants import (
     DB_TABLE_GENOME_ARTIST_META,
     DB_TABLE_GENOME_CACHE,
     DB_TABLE_GENOME_LISTENS,
+    DB_TABLE_GENOME_REMOVED_LISTENS,
     DB_TABLE_SETTINGS,
     ENGINE_VERSION,
     GENOME_DISCOVERY_CACHE_VERSION,
@@ -47,7 +50,7 @@ from .constants import (
     SOURCE_MA_BACKFILL,
     SOURCE_MA_PLAYLOG,
 )
-from .database import UNSET, GenomeDatabase
+from .database import UNSET, GenomeDatabase, query_params
 from .models import (
     ArtistMeta,
     FailedArtist,
@@ -93,6 +96,9 @@ _IN_HISTORY = (
     f"EXISTS (SELECT 1 FROM {DB_TABLE_GENOME_LISTENS} history "
     f"WHERE history.artist_key = {DB_TABLE_GENOME_ARTIST_META}.artist_key)"
 )
+
+# settings-table key: {player_id: name} as Music Assistant named each player when it last played
+_PLAYER_NAMES_KEY = "player_names"
 
 #: artist keys per ``IN (...)`` read of genome_artist_meta
 _META_READ_CHUNK = 500
@@ -207,8 +213,9 @@ class GenomeStore:
         :param target: Path of the file to create. It must not already exist.
         """
         assert self.database is not None
-        await self.database.commit()
-        await self.database.execute("VACUUM INTO :target", {"target": target})
+        async with self._batch_lock:
+            await self.database.commit()
+            await self.database.execute("VACUUM INTO :target", {"target": target})
 
     def __init__(
         self,
@@ -227,6 +234,9 @@ class GenomeStore:
         self.storage_path = storage_path
         self.player_name_resolver = player_name_resolver
         self.database: GenomeDatabase | None = None
+        # held for the whole of an add_listens batch (one transaction spanning many awaits) and
+        # by snapshot_to, whose VACUUM cannot run while that transaction is open
+        self._batch_lock = asyncio.Lock()
 
     async def setup(self) -> None:
         """Open (creating if needed) ``genome.db`` and run the schema-version handshake."""
@@ -268,7 +278,12 @@ class GenomeStore:
         await self.__create_database_indexes()
 
     async def close(self) -> None:
-        """Close the database connection."""
+        """
+        Close the database connection; a second call does nothing.
+
+        Home Assistant stopping closes the store (see ``__init__.py``), and an unload may still
+        follow it.
+        """
         if self.database is not None:
             await self.database.close()
 
@@ -283,7 +298,16 @@ class GenomeStore:
         Insert a batch of listens, silently skipping duplicates by ``dedupe_key``.
 
         Also ensures a ``pending`` stub row exists in ``genome_artist_meta`` for every artist
-        seen for the first time, so :meth:`pending_artist_keys` picks it up.
+        in the batch, so :meth:`pending_artist_keys` picks it up. The stubs are written in the
+        SAME transaction as the listens, each one before the first listen of its artist: the
+        connection is shared, so any other coroutine's ``commit`` can land between two of these
+        statements, and a listen committed without its stub would never be enriched (nothing
+        creates the stub later - a re-import finds the listen already there). For the same
+        reason a batch that fails or is cancelled part-way is rolled back rather than left for
+        the next unrelated commit to persist half of it.
+
+        A Last.fm row whose ``dedupe_key`` is tombstoned in ``genome_removed_listens`` (duplicate
+        removal deleted it before) is not inserted again; it counts as a duplicate.
 
         :param listens: The normalized listens to store.
         :param listener: The listener partition these listens belong to (``"household"`` in v1).
@@ -301,48 +325,78 @@ class GenomeStore:
             "last_played_at": None,
             "warnings": [],
         }
-        seen_artists: dict[str, str] = {}
-        for listen in listens:
-            dedupe_key = self._dedupe_key(listener, listen)
-            values = {
-                "listener": listener,
-                "ma_userid": ma_userid,
-                "played_at": listen.played_at,
-                "artist_key": listen.artist_key,
-                "artist_name": listen.artist_name,
-                "track_key": listen.track_key,
-                "track_name": listen.track_name,
-                "album_name": listen.album_name,
-                "source": listen.source,
-                "player_id": listen.player_id,
-                "duration_ms": listen.duration_ms,
-                "played_ms": listen.played_ms,
-                "fully_played": listen.fully_played,
-                "confidence": listen.confidence,
-                "dedupe_key": dedupe_key,
-            }
-            columns = list(values)
-            cursor = await self.database.execute(
-                f"INSERT OR IGNORE INTO {DB_TABLE_GENOME_LISTENS} "
-                f"({', '.join(columns)}) VALUES ({', '.join(f':{c}' for c in columns)})",
-                values,
-            )
-            if cursor.rowcount:
-                result["rows_imported"] += 1
-                seen_artists[listen.artist_key] = listen.artist_name
-                if (
-                    result["first_played_at"] is None
-                    or listen.played_at < result["first_played_at"]
-                ):
-                    result["first_played_at"] = listen.played_at
-                if result["last_played_at"] is None or listen.played_at > result["last_played_at"]:
-                    result["last_played_at"] = listen.played_at
-            else:
-                result["rows_duplicate"] += 1
-        await self.database.commit()
-        for artist_key, artist_name in seen_artists.items():
-            await self._ensure_artist_meta_stub(artist_key, artist_name)
+        stubbed: set[str] = set()
+        async with self._batch_lock:
+            await self._insert_listen_batch(listens, listener, ma_userid, result, stubbed)
         return result
+
+    async def _insert_listen_batch(
+        self,
+        listens: Sequence[Listen],
+        listener: str,
+        ma_userid: str | None,
+        result: GenomeImportResult,
+        stubbed: set[str],
+    ) -> None:
+        """:meth:`add_listens`' single transaction; fills in ``result``."""
+        assert self.database is not None
+        try:
+            for listen in listens:
+                if listen.artist_key not in stubbed:
+                    # INSERT OR IGNORE whether or not the listen turns out to be new: an artist
+                    # whose listens were committed without a stub (before this was one
+                    # transaction) gets its stub when any of them is seen again
+                    await self._insert_artist_meta_stub(listen.artist_key, listen.artist_name)
+                    stubbed.add(listen.artist_key)
+                dedupe_key = self._dedupe_key(listener, listen)
+                values = {
+                    "listener": listener,
+                    "ma_userid": ma_userid,
+                    "played_at": listen.played_at,
+                    "artist_key": listen.artist_key,
+                    "artist_name": listen.artist_name,
+                    "track_key": listen.track_key,
+                    "track_name": listen.track_name,
+                    "album_name": listen.album_name,
+                    "source": listen.source,
+                    "player_id": listen.player_id,
+                    "duration_ms": listen.duration_ms,
+                    "played_ms": listen.played_ms,
+                    "fully_played": listen.fully_played,
+                    "confidence": listen.confidence,
+                    "dedupe_key": dedupe_key,
+                }
+                columns = list(values)
+                cursor = await self.database.execute(
+                    f"INSERT OR IGNORE INTO {DB_TABLE_GENOME_LISTENS} "
+                    f"({', '.join(columns)}) "
+                    f"SELECT {', '.join(f':{c}' for c in columns)} "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM {DB_TABLE_GENOME_REMOVED_LISTENS} "
+                    "WHERE dedupe_key = :dedupe_key)",
+                    values,
+                )
+                if cursor.rowcount:
+                    result["rows_imported"] += 1
+                    if (
+                        result["first_played_at"] is None
+                        or listen.played_at < result["first_played_at"]
+                    ):
+                        result["first_played_at"] = listen.played_at
+                    if (
+                        result["last_played_at"] is None
+                        or listen.played_at > result["last_played_at"]
+                    ):
+                        result["last_played_at"] = listen.played_at
+                else:
+                    result["rows_duplicate"] += 1
+            await self.database.commit()
+        except BaseException:
+            # CancelledError included (a reload or shutdown mid-import). The rollback is queued
+            # on the connection's own thread behind the statement in flight, so it runs even if
+            # this task is cancelled again while awaiting it.
+            with contextlib.suppress(Exception):
+                await self.database.rollback()
+            raise
 
     async def iter_listens(self, listener: str, *, since: int = 0) -> AsyncIterator[Listen]:
         """
@@ -391,29 +445,29 @@ class GenomeStore:
         )
 
     async def get_artist_meta(self, artist_keys: Sequence[str]) -> dict[str, ArtistMeta]:
-        """Return known :class:`ArtistMeta` rows, keyed by ``artist_key`` (missing keys omitted)."""
+        """
+        Return known :class:`ArtistMeta` rows, keyed by ``artist_key`` (missing keys omitted).
+
+        Read in chunks of :data:`_META_READ_CHUNK`: every key is one bound variable, and a
+        rebuild passes every artist in the history at once - past SQLite's variable limit
+        (32,766) a single ``IN (...)`` fails, and the rebuild with it, on every attempt.
+        """
         assert self.database is not None
-        if not artist_keys:
-            return {}
-        rows = await self.database.get_rows_from_query(
-            f"SELECT * FROM {DB_TABLE_GENOME_ARTIST_META} WHERE artist_key IN (:keys)",
-            {"keys": list(artist_keys)},
-            limit=0,
-        )
-        return {row["artist_key"]: self._row_to_artist_meta(row) for row in rows}
+        keys = list(dict.fromkeys(artist_keys))
+        found: dict[str, ArtistMeta] = {}
+        for start in range(0, len(keys), _META_READ_CHUNK):
+            rows = await self.database.get_rows_from_query(
+                f"SELECT * FROM {DB_TABLE_GENOME_ARTIST_META} WHERE artist_key IN (:keys)",
+                {"keys": keys[start : start + _META_READ_CHUNK]},
+                limit=0,
+            )
+            found.update((row["artist_key"], self._row_to_artist_meta(row)) for row in rows)
+        return found
 
     async def artist_genres(self, artist_keys: Sequence[str]) -> dict[str, tuple[str, ...]]:
-        """
-        Return the stored genre keys of every artist in ``artist_keys`` that has any.
-
-        Read in chunks, so a whole Music Assistant library can be looked up at once.
-        """
-        found: dict[str, tuple[str, ...]] = {}
-        keys = list(dict.fromkeys(artist_keys))
-        for start in range(0, len(keys), _META_READ_CHUNK):
-            meta = await self.get_artist_meta(keys[start : start + _META_READ_CHUNK])
-            found.update({key: row.genres for key, row in meta.items() if row.genres})
-        return found
+        """Return the stored genre keys of every artist in ``artist_keys`` that has any."""
+        meta = await self.get_artist_meta(artist_keys)
+        return {key: row.genres for key, row in meta.items() if row.genres}
 
     async def queue_artist_lookups(self, artists: Iterable[tuple[str, str]]) -> int:
         """
@@ -589,11 +643,10 @@ class GenomeStore:
         """
         Move ``error`` artists back to ``pending`` immediately, ignoring the error cooldown.
 
-        Reuses :meth:`upsert_artist_meta_full` with the same minimal row shape
-        (``artist_key``/``artist_name`` only) that :mod:`enrich.musicbrainz` already writes for
-        an ``error`` row - safe here for the same reason it is safe there: an ``error`` row
-        never carries ``mbid``/``mb_tags``/``genres``/popularity data, so rewriting it with only
-        those two columns clobbers nothing. This does no network work itself; the existing
+        Only ``resolve_state`` (and ``resolved_at``) change. An ``error`` row is NOT always
+        empty: an artist resolved long ago whose periodic re-check failed keeps its last good
+        metadata in ``error`` state (see :meth:`_upsert_artist_meta_rows`), so rewriting the
+        row would throw that away. This does no network work itself; the existing
         background/scheduled enrichment pass picks the row up on its next run because
         ``pending`` is always eligible, with no cooldown (see :meth:`pending_artist_keys`).
 
@@ -603,23 +656,32 @@ class GenomeStore:
         assert self.database is not None
         if artist_keys is not None and not artist_keys:
             return 0
-        query = (
-            f"SELECT artist_key, artist_name FROM {DB_TABLE_GENOME_ARTIST_META} "
-            "WHERE resolve_state = :error"
+        now = int(time.time())
+        update = (
+            f"UPDATE {DB_TABLE_GENOME_ARTIST_META} "
+            "SET resolve_state = :pending, resolved_at = :now WHERE resolve_state = :error"
         )
-        params: dict[str, Any] = {"error": RESOLVE_STATE_ERROR}
-        if artist_keys is not None:
-            query += " AND artist_key IN (:keys)"
-            params["keys"] = list(artist_keys)
-        rows = await self.database.get_rows_from_query(query, params, limit=0)
-        targets = [(row["artist_key"], row["artist_name"]) for row in rows]
-        if not targets:
-            return 0
-        await self.upsert_artist_meta_full(
-            [ArtistMetaWrite(artist_key=key, artist_name=name) for key, name in targets],
-            state=RESOLVE_STATE_PENDING,
-        )
-        return len(targets)
+        params: dict[str, Any] = {
+            "pending": RESOLVE_STATE_PENDING,
+            "now": now,
+            "error": RESOLVE_STATE_ERROR,
+        }
+        moved = 0
+        if artist_keys is None:
+            cursor = await self.database.execute(update, params)
+            moved = max(cursor.rowcount, 0)
+        else:
+            # chunked like get_artist_meta: one bound variable per key
+            keys = list(dict.fromkeys(artist_keys))
+            for start in range(0, len(keys), _META_READ_CHUNK):
+                query, chunk_params = query_params(
+                    update + " AND artist_key IN (:keys)",
+                    {**params, "keys": keys[start : start + _META_READ_CHUNK]},
+                )
+                cursor = await self.database.execute(query, chunk_params)
+                moved += max(cursor.rowcount, 0)
+        await self.database.commit()
+        return moved
 
     async def all_failed_artist_keys(self) -> frozenset[str]:
         """
@@ -866,14 +928,23 @@ class GenomeStore:
         """
         assert self.database is not None
         if listener is None:
+            # the tombstones go with the listens: they only mean "a copy of a play another
+            # source has", and a re-import after a clear must be able to bring every row back
             for table in (
                 DB_TABLE_GENOME_LISTENS,
                 DB_TABLE_GENOME_ARTIST_META,
                 DB_TABLE_GENOME_CACHE,
+                DB_TABLE_GENOME_REMOVED_LISTENS,
             ):
                 await self.database.execute(f"DELETE FROM {table}")
         else:
             await self.database.delete(DB_TABLE_GENOME_LISTENS, {"listener": listener})
+            # dedupe keys start with the listener (see _dedupe_key)
+            await self.database.execute(
+                f"DELETE FROM {DB_TABLE_GENOME_REMOVED_LISTENS} "
+                "WHERE substr(dedupe_key, 1, length(:prefix)) = :prefix",
+                {"prefix": f"{listener}|"},
+            )
             await self.database.delete(DB_TABLE_GENOME_CACHE, {"key": self._cache_key(listener)})
             await self.database.delete(
                 DB_TABLE_GENOME_CACHE, {"key": self._discovery_cache_key(listener)}
@@ -891,6 +962,33 @@ class GenomeStore:
         )
         return {row["source"]: int(row["n"]) for row in rows}
 
+    async def remembered_player_names(self) -> dict[str, str]:
+        """``{player_id: name}`` as recorded when each player last had a play captured."""
+        assert self.database is not None
+        row = await self.database.get_row(DB_TABLE_SETTINGS, {"key": _PLAYER_NAMES_KEY})
+        if row is None:
+            return {}
+        try:
+            names = json_loads(row["value"])
+        except Exception:  # pragma: no cover - defensive, malformed settings row
+            return {}
+        if not isinstance(names, dict):  # pragma: no cover - defensive
+            return {}
+        return {str(key): str(value) for key, value in names.items() if value}
+
+    async def remember_player_names(self, names: Mapping[str, str]) -> None:
+        """Record players' current names, so a player that later disappears keeps one."""
+        assert self.database is not None
+        known = await self.remembered_player_names()
+        merged = {**known, **{key: value for key, value in names.items() if value}}
+        if merged == known:
+            return
+        await self.database.insert_or_replace(
+            DB_TABLE_SETTINGS,
+            {"key": _PLAYER_NAMES_KEY, "value": json_dumps(merged), "type": "json"},
+        )
+        await self.database.commit()
+
     async def player_names(self) -> dict[str, str]:
         """Return ``{player_id: display_name}`` for every player_id seen in stored listens."""
         assert self.database is not None
@@ -900,9 +998,12 @@ class GenomeStore:
         )
         names: dict[str, str] = {}
         resolver = self.player_name_resolver
+        remembered = await self.remembered_player_names()
         for row in rows:
             player_id = row["player_id"]
-            display_name = player_id
+            # a player gone from Music Assistant (a phone, a browser tab) keeps the name it had
+            # when it played; one never named at all is at least recognisable as a player
+            display_name = remembered.get(player_id) or f"Unnamed player ({player_id[:6]})"
             if resolver is not None:
                 try:
                     if resolved := resolver(player_id):
@@ -1295,18 +1396,41 @@ class GenomeStore:
         return matched
 
     async def _delete_listens(self, ids: Sequence[int]) -> None:
-        """Delete ``genome_listens`` rows by id, in chunks well under SQLite's variable limit."""
+        """
+        Delete ``genome_listens`` rows by id, in chunks well under SQLite's variable limit.
+
+        Every Last.fm row deleted leaves a tombstone - its ``dedupe_key`` in
+        ``genome_removed_listens`` - in the same transaction as the delete. Incremental Last.fm
+        polls re-read an overlap window behind their resume mark (late scrobbles), so a row
+        removed as a duplicate WILL be fetched again; without the tombstone it would be
+        re-inserted and removed again on every poll, and each round would be reported as
+        "imported" and "removed". :meth:`add_listens` skips a tombstoned key.
+        """
         assert self.database is not None
         if not ids:
             return
+        now = int(time.time())
         for start in range(0, len(ids), 500):
             chunk = ids[start : start + 500]
             placeholders = ", ".join(f":id{i}" for i in range(len(chunk)))
+            params: dict[str, Any] = {f"id{i}": listen_id for i, listen_id in enumerate(chunk)}
             await self.database.execute(
-                f"DELETE FROM {DB_TABLE_GENOME_LISTENS} WHERE id IN ({placeholders})",
-                {f"id{i}": listen_id for i, listen_id in enumerate(chunk)},
+                f"INSERT OR IGNORE INTO {DB_TABLE_GENOME_REMOVED_LISTENS} (dedupe_key, removed_at) "
+                f"SELECT dedupe_key, :now FROM {DB_TABLE_GENOME_LISTENS} "
+                f"WHERE source = '{SOURCE_LASTFM}' AND id IN ({placeholders})",
+                {**params, "now": now},
+            )
+            await self.database.execute(
+                f"DELETE FROM {DB_TABLE_GENOME_LISTENS} WHERE id IN ({placeholders})", params
             )
         await self.database.commit()
+
+    async def removed_listen_count(self) -> int:
+        """How many Last.fm rows are tombstoned (removed as duplicates and kept out)."""
+        assert self.database is not None
+        return await self.database.get_count_from_query(
+            f"SELECT 1 FROM {DB_TABLE_GENOME_REMOVED_LISTENS}"
+        )
 
     def _dedupe_key(self, listener: str, listen: Listen) -> str:
         """Build the ``dedupe_key`` for a listen per §3.1."""
@@ -1359,20 +1483,42 @@ class GenomeStore:
     async def _ensure_artist_meta_stub(self, artist_key: str, artist_name: str) -> None:
         """Insert a ``pending`` placeholder row for an artist if one does not already exist."""
         assert self.database is not None
+        await self._insert_artist_meta_stub(artist_key, artist_name)
+        await self.database.commit()
+
+    async def _insert_artist_meta_stub(self, artist_key: str, artist_name: str) -> None:
+        """:meth:`_ensure_artist_meta_stub` without the commit (the caller's transaction)."""
+        assert self.database is not None
         await self.database.execute(
             f"INSERT OR IGNORE INTO {DB_TABLE_GENOME_ARTIST_META} "
             "(artist_key, artist_name, mb_tags, genres, resolved_at, resolve_state) "
             "VALUES (:artist_key, :artist_name, '[]', '[]', 0, :state)",
             {"artist_key": artist_key, "artist_name": artist_name, "state": RESOLVE_STATE_PENDING},
         )
-        await self.database.commit()
 
     async def _upsert_artist_meta_rows(
         self, rows: Iterable[ArtistMetaWrite], *, state: str
     ) -> None:
-        """Write a batch of :class:`ArtistMetaWrite` rows with a single ``resolved_at``/state."""
+        """
+        Write a batch of :class:`ArtistMetaWrite` rows with a single ``resolved_at``/state.
+
+        Two things are never cleared by a write that does not carry them:
+
+        * **A failed or empty re-check keeps the last good metadata.** ``ok`` rows come due
+          again after :data:`RESOLVE_OK_COOLDOWN_DAYS`. If that re-check raises (``error``) or
+          finds no confident match (``not_found``), MusicBrainz being down or a search ranking
+          that shifted says nothing about the genres already known - so on an EXISTING row an
+          ``error``/``not_found`` write only moves ``resolve_state``/``resolved_at`` (and the
+          name). A value the write does carry may fill an empty column, but never replaces or
+          clears one (``COALESCE``; ``'[]'`` counts as empty). A brand-new or ``pending`` stub
+          row has nothing to lose, so for it this is the same as before.
+        * **ListenBrainz popularity belongs to its own pass.** ``lb_listeners``/
+          ``lb_listen_count`` are written by :meth:`update_lb_popularity`; a MusicBrainz
+          result has no popularity, so an absent key is :data:`UNSET` (kept), not ``NULL``.
+        """
         assert self.database is not None
         now = int(time.time())
+        keep_known = state in (RESOLVE_STATE_ERROR, RESOLVE_STATE_NOT_FOUND)
         for row in rows:
             values = {
                 "artist_key": row["artist_key"],
@@ -1386,13 +1532,42 @@ class GenomeStore:
                 # not clobber a value written by another enrichment path - see musicbrainz.py.
                 "first_release_year": row.get("first_release_year", UNSET),
                 "country": row.get("country"),
-                "lb_listeners": row.get("lb_listeners"),
-                "lb_listen_count": row.get("lb_listen_count"),
+                "lb_listeners": row.get("lb_listeners", UNSET),
+                "lb_listen_count": row.get("lb_listen_count", UNSET),
                 "resolved_at": now,
                 "resolve_state": state,
             }
-            await self.database.upsert(DB_TABLE_GENOME_ARTIST_META, values)
+            if keep_known:
+                await self._write_unresolved_meta_row(values)
+            else:
+                await self.database.upsert(DB_TABLE_GENOME_ARTIST_META, values)
         await self.database.commit()
+
+    async def _write_unresolved_meta_row(self, values: dict[str, Any]) -> None:
+        """Insert an ``error``/``not_found`` row, or on conflict keep what is already known."""
+        assert self.database is not None
+        values = {key: value for key, value in values.items() if value is not UNSET}
+        always = ("artist_name", "resolved_at", "resolve_state")
+        updates = []
+        for column in values:
+            if column == "artist_key":
+                continue
+            if column in always:
+                updates.append(f"{column} = excluded.{column}")
+            elif column in ("mb_tags", "genres"):
+                updates.append(
+                    f"{column} = CASE WHEN {column} IS NULL OR {column} = '[]' "
+                    f"THEN excluded.{column} ELSE {column} END"
+                )
+            else:
+                updates.append(f"{column} = COALESCE({column}, excluded.{column})")
+        columns = tuple(values)
+        await self.database.execute(
+            f"INSERT INTO {DB_TABLE_GENOME_ARTIST_META} ({', '.join(columns)}) "
+            f"VALUES ({', '.join(f':{c}' for c in columns)}) "
+            f"ON CONFLICT(artist_key) DO UPDATE SET {', '.join(updates)}",
+            values,
+        )
 
     async def __create_database_tables(self) -> None:
         """Create database tables (see §3.1)."""
@@ -1445,6 +1620,13 @@ class GenomeStore:
                     [value] json NOT NULL,
                     [created_at] INTEGER NOT NULL,
                     [expires_at] INTEGER NOT NULL DEFAULT 0);"""
+        )
+        # A new table, not a change to genome_listens: IF NOT EXISTS creates it on an existing
+        # database without a migration. See _delete_listens for what it is for.
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_GENOME_REMOVED_LISTENS}(
+                    [dedupe_key] TEXT PRIMARY KEY,
+                    [removed_at] INTEGER NOT NULL);"""
         )
         await self.database.commit()
 

@@ -18,6 +18,8 @@ from unittest.mock import patch
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_OFF, STATE_ON
+from homeassistant.core import Context
+from homeassistant.exceptions import Unauthorized
 from music_assistant_models.enums import EventType
 from music_assistant_models.event import MassEvent
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -36,6 +38,7 @@ from .conftest import PLAYED_AT
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
+    from homeassistant.auth.models import User
     from homeassistant.core import HomeAssistant
     from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
     from pytest_homeassistant_custom_component.typing import WebSocketGenerator
@@ -218,6 +221,9 @@ async def test_a_played_track_becomes_one_stored_listen_with_its_room(
     assert state.attributes["plays_captured"] == 1
     assert state.attributes["last_play"] == "The Dandy Warhols - Bohemian Like You"
     # the room is named the way Music Assistant names the player
+    assert await runtime.store.player_names() == {"kitchen": "Kitchen speaker"}
+    # a player that leaves Music Assistant (a phone) keeps the name it played under
+    runtime.capture.player_names.clear()
     assert await runtime.store.player_names() == {"kitchen": "Kitchen speaker"}
 
 
@@ -597,8 +603,43 @@ async def test_home_assistant_stopping_writes_the_track_still_playing(
     await hass.async_block_till_done()
     hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
     await hass.async_block_till_done()
-    counts = await loaded.runtime_data.store.source_counts("household")
+    # the stop closed the store (after the write): read what reached the file
+    reopened = GenomeStore(loaded.runtime_data.store.storage_path)
+    await reopened.setup()
+    try:
+        counts = await reopened.source_counts("household")
+    finally:
+        await reopened.close()
     assert counts.get("ma_playlog") == 1
+
+
+async def test_home_assistant_stopping_closes_the_store(
+    hass: HomeAssistant, loaded: MockConfigEntry
+) -> None:
+    """
+    The store is closed when Home Assistant stops, and a later unload is still clean.
+
+    Regression: only the capture was stopped. The aiosqlite worker is a non-daemon thread, so
+    the open connection added seconds to every shutdown and ``PRAGMA optimize`` never ran.
+    """
+    from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+
+    runtime = loaded.runtime_data
+    thread = runtime.store.database._db._thread
+    assert thread is not None and thread.is_alive()
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
+    await hass.async_add_executor_job(thread.join, 5)
+    assert not thread.is_alive()
+    # nothing is left to touch the closed store: schedules and capture timers are gone
+    assert not runtime._unsubscribers
+    assert runtime.capture._unsub_flush is None
+    assert runtime.capture._unsub_retry is None
+    # an unload after the stop neither shuts down again (that writes the job map) nor closes
+    with patch.object(runtime.store, "close", wraps=runtime.store.close) as close:
+        assert await hass.config_entries.async_unload(loaded.entry_id)
+    close.assert_not_called()
+    assert loaded.state is ConfigEntryState.NOT_LOADED
 
 
 async def test_a_reload_mid_track_does_not_count_it_twice(
@@ -647,3 +688,48 @@ async def test_a_client_that_cannot_be_built_still_retries(
         capture = genome_entry.runtime_data.capture
         assert "bad url" in capture.status.last_error
         assert capture._unsub_retry is not None
+
+
+def test_a_player_without_a_name_is_labelled_by_its_device() -> None:
+    from types import SimpleNamespace
+
+    from custom_components.listening_genome.live_capture import _player_label
+
+    def player(name: str, manufacturer: str, model: str) -> SimpleNamespace:
+        info = SimpleNamespace(manufacturer=manufacturer, model=model)
+        return SimpleNamespace(name=name, device_info=info)
+
+    assert _player_label(player("Kitchen speaker", "Google", "Nest Audio")) == "Kitchen speaker"
+    assert _player_label(player("", "Apple", "iPhone")) == "Apple iPhone"
+    assert _player_label(player(" ", "Unknown Manufacturer", "Unknown model")) is None
+
+
+@pytest.mark.parametrize(
+    ("service", "data"),
+    [
+        ("import_lastfm", {}),
+        ("import_apple_csv", {"path": "/media/x.csv"}),
+        ("import_fork_export", {"path": "/media/genome.db"}),
+    ],
+)
+async def test_import_actions_are_for_administrators_only(
+    hass: HomeAssistant,
+    loaded: MockConfigEntry,
+    hass_read_only_user: User,
+    service: str,
+    data: dict[str, Any],
+) -> None:
+    """
+    A non-admin user cannot start an import (they write into the listening history).
+
+    Regression: the actions were registered with ``hass.services.async_register``, which any
+    authenticated user may call.
+    """
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            "listening_genome",
+            service,
+            data,
+            blocking=True,
+            context=Context(user_id=hass_read_only_user.id),
+        )
