@@ -58,6 +58,8 @@ SERVICE_IMPORT_LASTFM: Final = "import_lastfm"
 SERVICE_IMPORT_APPLE_CSV: Final = "import_apple_csv"
 ATTR_PATH: Final = "path"
 ATTR_MAX_PAGES: Final = "max_pages"
+ATTR_DRY_RUN: Final = "dry_run"
+SERVICE_IMPORT_FORK_EXPORT: Final = "import_fork_export"
 
 # where an uploaded Apple export is copied while it is imported (inside STORAGE_DIRNAME)
 UPLOADS_DIRNAME: Final = "uploads"

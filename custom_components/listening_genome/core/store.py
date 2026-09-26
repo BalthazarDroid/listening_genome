@@ -1066,6 +1066,24 @@ class GenomeStore:
         )
         return bool(rows)
 
+    async def first_own_live_capture(self, listener: str) -> int | None:
+        """
+        When this integration's own live capture started recording, or ``None`` if it has not.
+
+        Its rows carry the player; the fork's live rows never did (``PLAYLOG_UPDATED`` had no
+        player in it), which is how the two are told apart in a database that holds both.
+        """
+        assert self.database is not None
+        rows = await self.database.get_rows_from_query(
+            f"SELECT MIN(played_at) AS first FROM {DB_TABLE_GENOME_LISTENS} "
+            f"WHERE listener = :listener AND source = '{SOURCE_MA_PLAYLOG}' "
+            "AND player_id IS NOT NULL",
+            {"listener": listener},
+            limit=1,
+        )
+        first = rows[0]["first"] if rows else None
+        return int(first) if first is not None else None
+
     async def max_listen_id(self) -> int:
         """The newest row id in ``genome_listens`` (``0`` when empty): a "rows added after" mark."""
         assert self.database is not None

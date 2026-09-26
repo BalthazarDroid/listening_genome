@@ -11,6 +11,13 @@
         "data": {
           "ma_entry_id": "Music Assistant server"
         }
+      },
+      "reconfigure": {
+        "title": "Link to Music Assistant",
+        "description": "Choose the Music Assistant integration Listening Genome records plays from. Only a reference to it is stored, never its address or token.",
+        "data": {
+          "ma_entry_id": "Music Assistant server"
+        }
       }
     },
     "error": {
@@ -18,7 +25,8 @@
     },
     "abort": {
       "ma_not_configured": "Listening Genome reads your history from Music Assistant, so the Music Assistant integration must be set up first. Add it under Settings > Devices & services, then add Listening Genome again.",
-      "single_instance_allowed": "Listening Genome is already configured. Only a single configuration is possible."
+      "single_instance_allowed": "Listening Genome is already configured. Only a single configuration is possible.",
+      "reconfigure_successful": "Listening Genome now records plays from the chosen Music Assistant server."
     }
   },
   "options": {
@@ -147,6 +155,20 @@
         "path": {
           "name": "File",
           "description": "Full path to the CSV, in /media or your config folder."
+        }
+      }
+    },
+    "import_fork_export": {
+      "name": "Import the fork's last live plays",
+      "description": "One-time, for the move from the Music Assistant fork: imports the plays the fork recorded live that are not here yet (only those before this integration began recording them itself). Nothing else in the file is used, and the file is not changed.",
+      "fields": {
+        "path": {
+          "name": "Export file",
+          "description": "The database the fork exported, e.g. /media/genome-export-….db"
+        },
+        "dry_run": {
+          "name": "Only count",
+          "description": "Report what would be imported without importing it."
         }
       }
     }

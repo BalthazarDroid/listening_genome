@@ -33,7 +33,7 @@ from homeassistant.helpers.event import async_call_later, async_track_time_inter
 from music_assistant_client import MusicAssistantClient
 from music_assistant_models.enums import EventType
 
-from .const import CONF_MA_ENTRY_ID
+from .const import CONF_MA_ENTRY_ID, MA_DOMAIN
 from .core.constants import LOGGER
 from .core.live import LivePlayTracker, PlayReport
 
@@ -187,6 +187,10 @@ class MusicAssistantCapture:
         if self._stopped or (self._task is not None and not self._task.done()):
             return
         ma_entry = self.hass.config_entries.async_get_entry(self.entry.data[CONF_MA_ENTRY_ID])
+        if ma_entry is None and self._relink():
+            # the entry's data changed: Home Assistant reloads this integration, and the new
+            # capture connects to the entry it now points at
+            return
         url = ma_entry.data.get(CONF_URL) if ma_entry is not None else None
         if not url or ma_entry is None:
             self._set_disconnected(
@@ -199,6 +203,30 @@ class MusicAssistantCapture:
             self._session_then_retry(url, ma_entry.data.get(CONF_TOKEN)),
             "Listening Genome: Music Assistant live capture",
         )
+
+    @callback
+    def _relink(self) -> bool:
+        """
+        The linked Music Assistant entry is gone: follow its replacement if there is exactly one.
+
+        Swapping Music Assistant add-ons (the DEV server back to the regular one) means deleting
+        one Music Assistant entry and adding another - one at a time, so the players keep their
+        entity ids. The new entry has a new id. With exactly one Music Assistant entry left, it
+        can only be the replacement, so the link moves to it rather than capture stopping until
+        someone notices. With none, or several, nothing is guessed (Reconfigure picks one).
+        """
+        candidates = self.hass.config_entries.async_entries(MA_DOMAIN, include_ignore=False)
+        if len(candidates) != 1:
+            return False
+        replacement = candidates[0]
+        LOGGER.warning(
+            "The linked Music Assistant entry was removed; now following %r instead",
+            replacement.title,
+        )
+        self.hass.config_entries.async_update_entry(
+            self.entry, data={**self.entry.data, CONF_MA_ENTRY_ID: replacement.entry_id}
+        )
+        return True
 
     async def _session_then_retry(self, url: str, token: str | None) -> None:
         listened_for = await self._session(url, token)

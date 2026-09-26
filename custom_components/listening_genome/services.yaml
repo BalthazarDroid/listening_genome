@@ -14,3 +14,14 @@ import_apple_csv:
       example: /media/Apple Music - Play History Daily Tracks.csv
       selector:
         text:
+import_fork_export:
+  fields:
+    path:
+      required: true
+      example: /media/genome-export-20260926-120000.db
+      selector:
+        text:
+    dry_run:
+      default: false
+      selector:
+        boolean:

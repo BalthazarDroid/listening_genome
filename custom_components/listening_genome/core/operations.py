@@ -15,10 +15,13 @@ talking to MusicBrainz for nothing; the next hourly run picks up whatever is lef
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
+import pathlib
+import sqlite3
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..enrich.listenbrainz import artist_popularity
 from ..enrich.musicbrainz import MusicBrainzPassReport, run_musicbrainz_pass
@@ -35,6 +38,7 @@ from .constants import (
     RESOLVE_STATE_NOT_FOUND,
     RESOLVE_STATE_OK,
     RESOLVE_STATE_PENDING,
+    SOURCE_MA_PLAYLOG,
 )
 from .discovery import DiscoveryRunner
 from .http import describe_http_error
@@ -46,6 +50,7 @@ from .jobs import (
     JOB_LASTFM_IMPORT,
     JOB_REBUILD,
 )
+from .models import Listen
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -54,7 +59,7 @@ if TYPE_CHECKING:
     from .http import HttpClient
     from .jobs import JobTracker
     from .live import CapturedListen
-    from .models import GenomeImportResult, GenomeRebuildResult, GenomeResult, Listen
+    from .models import GenomeImportResult, GenomeRebuildResult, GenomeResult
     from .service import GenomeService
     from .store import DuplicateRemoval
 
@@ -384,6 +389,51 @@ class GenomeOperations:
             LOGGER.info("Discovery finished: %s", summary)
             return report
 
+    async def import_fork_live_plays(self, path: str, *, dry_run: bool = False) -> dict[str, Any]:
+        """
+        Bring over the plays the Music Assistant fork captured live after the last export.
+
+        Phase 4: the fork kept recording until it was switched off, and a live-captured play
+        exists nowhere else (no import can recreate it). Only its ``ma_playlog`` rows are taken,
+        and only those BEFORE this integration's own live capture began - from then on both
+        recorded the same plays, and the fork stamped a play when MA reported it rather than
+        when it started, so the two copies would not collapse into one. Everything else in the
+        export (Apple, Last.fm) is already here, deliberately cleaned of duplicates, and must not
+        come back. The file is opened read-only.
+
+        :param path: A database exported by the fork (``genome/export_db``).
+        :param dry_run: Count only; change nothing.
+        """
+        cutoff = await self.store.first_own_live_capture(LISTENER_HOUSEHOLD)
+        rows = await asyncio.to_thread(_read_fork_live_rows, path)
+        eligible = [row for row in rows if cutoff is None or row["played_at"] < cutoff]
+        report: dict[str, Any] = {
+            "fork_live_plays": len(rows),
+            "before_own_capture": len(eligible),
+            "own_capture_started": cutoff,
+            "added": 0,
+            "dry_run": dry_run,
+        }
+        if dry_run or not eligible:
+            return report
+        by_user: dict[str | None, list[Listen]] = {}
+        for row in eligible:
+            by_user.setdefault(row["ma_userid"], []).append(_listen_from_row(row))
+        for userid, listens in by_user.items():
+            result = await self.store.add_listens(
+                listens, listener=LISTENER_HOUSEHOLD, ma_userid=userid
+            )
+            report["added"] += result["rows_imported"]
+        LOGGER.warning(
+            "Imported %d live play(s) from the fork's export %s (%d there, %d before this "
+            "integration's own capture began)",
+            report["added"],
+            path,
+            report["fork_live_plays"],
+            report["before_own_capture"],
+        )
+        return report
+
     async def _already_captured(self, listen: Listen) -> bool:
         """
         Whether this play was already written by a capture that stopped part-way through it.
@@ -521,6 +571,42 @@ class GenomeOperations:
             report.unknown,
         )
         return report
+
+
+_FORK_LIVE_COLUMNS = (
+    "ma_userid, played_at, artist_key, artist_name, track_key, track_name, album_name, "
+    "source, player_id, duration_ms, played_ms, fully_played, confidence"
+)
+
+
+def _read_fork_live_rows(path: str) -> list[dict[str, Any]]:
+    """The fork export's live-captured rows (blocking; read-only - the file is never written)."""
+    uri = f"file:{pathlib.Path(path).resolve()}?mode=ro"
+    with contextlib.closing(sqlite3.connect(uri, uri=True)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            f"SELECT {_FORK_LIVE_COLUMNS} FROM genome_listens "
+            f"WHERE source = '{SOURCE_MA_PLAYLOG}' AND listener = '{LISTENER_HOUSEHOLD}' "
+            "ORDER BY played_at"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _listen_from_row(row: dict[str, Any]) -> Listen:
+    return Listen(
+        played_at=int(row["played_at"]),
+        artist_key=row["artist_key"],
+        artist_name=row["artist_name"],
+        track_key=row["track_key"],
+        track_name=row["track_name"],
+        album_name=row["album_name"],
+        source=row["source"],
+        player_id=row["player_id"],
+        duration_ms=row["duration_ms"],
+        played_ms=row["played_ms"],
+        fully_played=None if row["fully_played"] is None else bool(row["fully_played"]),
+        confidence=float(row["confidence"]),
+    )
 
 
 def read_csv_header(path: str) -> list[str]:

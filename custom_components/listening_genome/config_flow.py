@@ -128,6 +128,45 @@ class ListeningGenomeConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="pick", data_schema=schema, errors=errors)
 
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """
+        Link to a different Music Assistant entry (after swapping Music Assistant servers).
+
+        With exactly one Music Assistant entry the link also moves by itself (see
+        ``live_capture._relink``); this is for when there are several, or none yet.
+        """
+        entry = self._get_reconfigure_entry()
+        entries = {ma.entry_id: ma for ma in self._ma_entries()}
+        if not entries:
+            return self.async_abort(reason="ma_not_configured")
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if user_input[CONF_MA_ENTRY_ID] in entries:
+                return self.async_update_reload_and_abort(
+                    entry, data_updates={CONF_MA_ENTRY_ID: user_input[CONF_MA_ENTRY_ID]}
+                )
+            errors["base"] = "ma_entry_missing"
+        current = entry.data.get(CONF_MA_ENTRY_ID)
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_MA_ENTRY_ID,
+                    default=current if current in entries else next(iter(entries)),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[
+                            SelectOptionDict(value=entry_id, label=ma.title)
+                            for entry_id, ma in entries.items()
+                        ],
+                        mode=SelectSelectorMode.LIST,
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="reconfigure", data_schema=schema, errors=errors)
+
     def _create(self, ma_entry: ConfigEntry) -> ConfigFlowResult:
         """Create the entry, storing only the Music Assistant entry's id."""
         return self.async_create_entry(

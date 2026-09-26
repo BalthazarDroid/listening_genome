@@ -5,6 +5,9 @@
     },
     "import_apple_csv": {
       "service": "mdi:file-music"
+    },
+    "import_fork_export": {
+      "service": "mdi:database-import"
     }
   }
 }
