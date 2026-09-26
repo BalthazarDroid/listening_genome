@@ -1,0 +1,747 @@
+/*
+ * Listening Genome — panel theme.
+ *
+ * Everything here is scoped under `.genome-page`, so the rest of Music Assistant is
+ * untouched: this is one feature's aesthetic, not a change to the app's design language.
+ *
+ * The look is instrument panel rather than dashboard: hairline borders, corner ticks,
+ * uppercase tracked labels, tabular figures, and colour used only where it carries
+ * meaning. The molecule supplies the light; the panels around it should stay quiet.
+ *
+ * TWO faces, because one face cannot do both jobs here:
+ *   - Syncopate (Apache 2.0) for titles and the hero figures. Wide, thin and unusual -
+ *     it is the page's voice. Its lowercase reads almost as small caps, which is exactly
+ *     why it must never carry a sentence.
+ *   - Jura (SIL OFL 1.1) for everything a person actually reads. Thin and geometric
+ *     enough to belong beside Syncopate, with real lowercase that survives 11px.
+ * Licences ship alongside the files in assets/genome/fonts/.
+ *
+ * Both are bundled rather than fetched: Home Assistant runs on a local network, and a
+ * panel that waits on fonts.googleapis.com is a panel that renders wrong when the
+ * internet is down. Subset to Latin; about 58KB for all five faces.
+ */
+
+@font-face {
+  font-family: "Syncopate";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("@/assets/genome/fonts/Syncopate-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Syncopate";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("@/assets/genome/fonts/Syncopate-Bold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Jura";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("@/assets/genome/fonts/Jura-Light.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Jura";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("@/assets/genome/fonts/Jura-Medium.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Jura";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("@/assets/genome/fonts/Jura-SemiBold.woff2") format("woff2");
+}
+
+.genome-page {
+  /* Titles and hero figures only. Never a sentence. */
+  --genome-display: "Syncopate", ui-sans-serif, system-ui, sans-serif;
+  /* Everything anyone reads. */
+  --genome-text: "Jura", ui-sans-serif, system-ui, sans-serif;
+  --genome-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Deep field. The ground is a cold blue-black drawn from the backbone's own blue, and
+     the panels sit a shade LIGHTER than the page so they read as lit surfaces rather than
+     holes cut in it. One accent, used sparingly: a live edge on whatever is being touched. */
+  --genome-accent: hsl(190 85% 62%);
+  --genome-panel-bg: hsl(215 40% 60% / 0.05);
+  --genome-panel-border: hsl(200 65% 70% / 0.3);
+  /* The corner ticks are the page's one piece of pure accent, and at 0.6 against a panel
+     this dark they barely registered. */
+  --genome-tick: hsl(190 90% 66% / 0.95);
+
+  font-family: var(--genome-text);
+  /* Slashed zero and tabular figures: these panels are full of numbers that should line
+     up column to column and never be mistaken for letters. */
+  font-feature-settings:
+    "tnum" 1,
+    "zero" 1;
+}
+
+/* A light theme would wash the whole conceit out - the molecule is light on darkness and
+   the panels are meant to read as backlit. So the page carries its own ground. */
+.genome-page {
+  --genome-ground: #070a10;
+  background: var(--genome-ground);
+}
+
+.genome-page h1,
+.genome-page h2 {
+  font-family: var(--genome-display);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+}
+.genome-page h3 {
+  font-family: var(--genome-text);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+/* ---- panels ------------------------------------------------------------------ */
+
+/* Applied to every Card on the page. The corner ticks are the whole signature: four
+   short right-angles at the corners rather than a continuous heavy border, which reads
+   as machined without adding visual weight. */
+.genome-page .genome-panel-frame {
+  position: relative;
+  background: var(--genome-panel-bg);
+  border: 1px solid var(--genome-panel-border);
+  /* No border-radius here on purpose. The Card's own rounding is a utility class this
+     stylesheet cannot outrank, so a value set here is dead code that only misleads the next
+     reader - and the brackets inherit the real radius rather than guessing at it. */
+  backdrop-filter: blur(6px);
+  /* A one-pixel highlight along the top edge: what makes a panel read as catching light
+     from above rather than as a flat rectangle of slightly different grey. */
+  box-shadow: inset 0 1px 0 hsl(200 60% 70% / 0.06);
+}
+/* Corner brackets.
+   Two things here are load-bearing, and both were got wrong before.
+
+   `border-radius: inherit` rather than a number. The Card's own rounding is a Tailwind
+   utility this stylesheet cannot outrank, so it renders at 14px while a hardcoded 11px here
+   drew a tighter arc that visibly missed the corner it was supposed to mark - the stray
+   crescents floating off the edge of every card. Inheriting means the bracket follows
+   whatever radius the card actually has, including if the design system changes it.
+
+   Inset 0, not -1px. The Card computes `overflow: hidden`, so anything hung outside the
+   padding box is clipped - which is why the brackets appeared as broken fragments rather
+   than as corners. Sitting flush inside, they overlay the inner edge of the border and read
+   as the corner being lit. */
+.genome-page .genome-panel-frame::before,
+.genome-page .genome-panel-frame::after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+  border-color: var(--genome-tick);
+  border-style: solid;
+  border-radius: inherit;
+  /* A faint bloom of the same colour. The bracket is one hairline on a dark panel; without
+     this it reads as drawn, and with it as lit, which is the whole point of an accent. */
+  filter: drop-shadow(0 0 3px hsl(190 90% 60% / 0.55));
+}
+/* `inherit` brings the radius of all FOUR corners, which curls the far end of each leg back
+   in and closes the bracket into a semicircle. Only the corner being marked keeps the
+   inherited radius; the other three are squared off so the legs run straight out from the
+   curve, which is what makes it read as a corner rather than a ring. */
+.genome-page .genome-panel-frame::before {
+  top: 0;
+  left: 0;
+  border-width: 1px 0 0 1px;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.genome-page .genome-panel-frame::after {
+  bottom: 0;
+  right: 0;
+  border-width: 0 1px 1px 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* ---- typography inside panels -------------------------------------------------- */
+
+/* Card titles become instrument labels: small, uppercase, widely tracked, quiet. The
+   information is the number below, not the word above it. */
+.genome-page .genome-panel-frame [data-slot="card-title"] {
+  font-family: var(--genome-display);
+  font-weight: 400;
+  font-size: 10px;
+  /* Syncopate is a very wide face, so the generous tracking a narrower one needs would
+     push a two-word label onto a second line inside a stat tile. */
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: hsl(215 10% 62%);
+}
+.genome-page .genome-panel-frame [data-slot="card-description"] {
+  font-family: var(--genome-text);
+  font-weight: 400;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  color: hsl(215 8% 48%);
+}
+
+/* Any big figure on the page. Medium rather than bold: at this size weight reads as
+   shouting, and tracking does the work instead. */
+.genome-page .text-2xl {
+  font-family: var(--genome-display);
+  font-weight: 400;
+  letter-spacing: 0.005em;
+  font-variant-numeric: tabular-nums;
+}
+
+.genome-page .genome-code {
+  font: 600 9.5px/1 var(--genome-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: hsl(215 8% 48%);
+}
+
+/* ---- the header ----------------------------------------------------------------- */
+
+.genome-page .genome-title {
+  font-family: var(--genome-display);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+/* A hairline under the header, fading out to the right: it separates the title from the
+   instruments without drawing a box around anything. */
+.genome-page .genome-header-rule {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    var(--genome-tick),
+    rgba(255, 255, 255, 0.05) 42%,
+    transparent 78%
+  );
+}
+
+/* ---- chips ---------------------------------------------------------------------- */
+
+.genome-page .genome-chip {
+  font-family: var(--genome-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: hsl(215 12% 72%);
+  padding: 4px 9px;
+}
+
+/* ---- unresolved-artist dialog ---------------------------------------------------- */
+
+.genome-unresolved {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 46vh;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+.genome-unresolved li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.genome-unresolved__name {
+  font-family: var(--genome-text);
+  font-size: 13px;
+  color: #e7e9ee;
+}
+
+/* Popups are rendered in a portal at the end of <body>, outside `.genome-page` - so the
+   theme has to be applied to them directly or they fall back to the app's default face.
+   Each popup root carries `genome-page` for exactly this reason. */
+.genome-page [data-slot="dialog-title"],
+.genome-page [data-slot="alert-title"] {
+  font-family: var(--genome-display);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 13px;
+}
+.genome-page [data-slot="dialog-description"],
+.genome-page [data-slot="alert-description"],
+.genome-page [data-slot="tooltip-content"] {
+  font-family: var(--genome-text);
+}
+
+/* ---- stat tiles ------------------------------------------------------------------ */
+
+.genome-page .genome-tile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  /* The tiles stretch to the page width, and on a wide screen a third of 1900px is far
+     more room than a label and a five-character figure need. Without a cap the text stayed
+     pinned left and the glyph drifted into the middle of an otherwise empty tile. Capping
+     the CONTENT and centring it keeps the tile full-bleed - it is still a panel the width
+     of its neighbours - while the thing inside it stays a readable object. All three caps
+     are equal, so the three figures still line up with each other. */
+  max-width: 21rem;
+  margin-inline: auto;
+}
+/* Text left, glyph hard right. The figure is what the tile is for, so it starts at the
+   same edge as every other tile's; the glyph fills the space that was empty. */
+.genome-page .genome-tile__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Only as wide as its text, so the leftover width is a real gap the glyph can sit in
+     the middle of. `1fr` here would leave the glyph pinned to the edge again. */
+  flex: 0 1 auto;
+  min-width: 0;
+  text-align: left;
+  /* The glyph is first in the DOM (it is decoration, and screen readers skip it), so
+     the visual order has to be stated: text first, glyph after. */
+  order: 0;
+}
+/* Auto margins on BOTH sides: the glyph centres itself in whatever space the text has
+   not taken, rather than hugging either edge. */
+.genome-page .gene-glyph {
+  order: 1;
+  margin-inline: auto;
+}
+/* The eclecticism tile's caption is the longest on the row; let it wrap rather than
+   squeeze the glyph's lane down to nothing. */
+.genome-page .genome-tile__body .genome-code {
+  white-space: normal;
+  line-height: 1.45;
+  max-width: 22ch;
+}
+
+/* ---- top artists / tracks -------------------------------------------------------- */
+
+/* Two columns once the card is wide enough. Twenty rows in a single column is a lot of
+   scrolling past a lot of empty space to the right of each name. */
+.genome-page .genome-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 5px 18px;
+}
+@container (min-width: 720px) {
+  .genome-page .genome-list {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.genome-page .genome-list__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-block: 6px;
+}
+/* The bar never said what it was measuring. It does now, and the label is small enough
+   to read once and then ignore. */
+.genome-page .genome-list__meter {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.genome-page .genome-list__bar {
+  width: 88px;
+}
+
+/* ---- expression legend ------------------------------------------------------------ */
+
+.genome-page .genome-legend-trigger {
+  margin-top: 10px;
+  font: 600 9.5px/1 var(--genome-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #8f939d;
+  border-bottom: 1px dotted rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  background: none;
+}
+.genome-page .genome-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.genome-page .genome-legend__row {
+  display: grid;
+  grid-template-columns: 9px 1fr;
+  gap: 9px;
+  align-items: start;
+  font-family: var(--genome-text);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: #c3c7d0;
+}
+.genome-page .genome-legend__swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-top: 3px;
+}
+.genome-page .genome-legend__note {
+  font-family: var(--genome-text);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #767b85;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 8px;
+}
+
+.genome-page .genome-unresolved__advice {
+  font-family: var(--genome-text);
+  font-size: 12px;
+  line-height: 1.5;
+  color: #9aa0ab;
+  margin: 4px 0 10px;
+}
+.genome-page .genome-unresolved__actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 14px;
+}
+.genome-page .genome-unresolved__hint {
+  font-family: var(--genome-text);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #767b85;
+  text-align: left;
+  flex: 1 1 auto;
+}
+
+/* ---- discovery ------------------------------------------------------------------- */
+
+.genome-page .genome-discovery__refresh {
+  height: 26px;
+  width: 26px;
+  /* The grid places a card-action in the top-right cell; nudge it onto the title's optical
+     baseline, which the cell's own top alignment does not do for a control this small. */
+  align-self: center;
+  color: hsl(215 10% 55%);
+}
+.genome-page .genome-discovery__body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.genome-page .genome-discovery__lead {
+  font-family: var(--genome-text);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: hsl(215 8% 50%);
+}
+.genome-page .genome-discovery__section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+/* A hairline under the section label, stopping short of the right edge: the same
+   instrument-panel device as the page's header rule, at section scale. */
+.genome-page .genome-discovery__label {
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--genome-panel-border);
+}
+.genome-page .genome-discovery__empty {
+  font-family: var(--genome-text);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: hsl(215 8% 46%);
+}
+.genome-page .genome-discovery__link {
+  color: var(--genome-accent);
+  text-decoration: none;
+  border-bottom: 1px solid hsl(190 85% 62% / 0.35);
+}
+.genome-page .genome-discovery__link:hover {
+  border-bottom-color: var(--genome-accent);
+}
+.genome-page .genome-discovery__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  /* Long enough to be worth scrolling, short enough that the card cannot outgrow the
+     heatmap beside it and drag the page layout around. */
+  max-height: 232px;
+  overflow-y: auto;
+}
+
+.genome-page .genome-strand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  transition: background-color 120ms ease;
+}
+.genome-page .genome-strand:hover {
+  background: hsl(205 55% 65% / 0.05);
+}
+.genome-page .genome-strand__mark {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+.genome-page .genome-strand__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.genome-page .genome-strand__name {
+  font-family: var(--genome-text);
+  font-size: 12.5px;
+  color: hsl(210 14% 84%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.genome-page .genome-strand__meta {
+  font: 600 9px/1.3 var(--genome-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: hsl(215 8% 44%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The match score is a bar rather than a number: Last.fm's similarity figure is ordinal in
+   practice, and printing "0.43" invites a precision it does not have. */
+.genome-page .genome-strand__score {
+  flex: 0 0 34px;
+  height: 3px;
+  border-radius: 2px;
+  background: hsl(215 40% 60% / 0.12);
+  overflow: hidden;
+}
+.genome-page .genome-strand__bar {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+
+.genome-page .genome-legend__lead {
+  font-family: var(--genome-text);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: hsl(210 12% 74%);
+  margin-bottom: 2px;
+}
+
+/* ---- stat column + top lists ------------------------------------------------------ */
+
+/* The three figures on the left, the top-twenty card on the right, both the same height.
+   `stretch` is what makes the list card take its height from the stat column instead of
+   from its own twenty rows. */
+.genome-page .genome-columns {
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: stretch;
+  gap: 16px;
+}
+@media (min-width: 900px) {
+  .genome-page .genome-columns {
+    grid-template-columns: minmax(230px, 0.85fr) 1.15fr;
+  }
+}
+
+.genome-page .genome-tiles {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 12px;
+}
+/* Compact: these are three small readings, not three panels. The cap and auto margins that
+   centred the content across a full-width tile are gone with the full-width tile. */
+.genome-page .genome-tiles .genome-tile {
+  max-width: none;
+  margin-inline: 0;
+  gap: 12px;
+}
+/* shadcn's Card carries its own vertical padding and CardContent its own horizontal, and
+   the template adds py-4 on top. Three paddings stacked left each small reading floating in
+   the middle of a box twice the height it needed. */
+/* The design system's own py-6 on the Card and py-4 on the CardContent stacked with anything
+   set here, leaving each small reading floating in a box twice the height it needed. A rule in
+   this stylesheet does not win against a utility class however specific it is, so the Card's
+   padding is dropped by passing conflicting utilities through cn() in the template, and only
+   the CardContent - which no longer carries a utility - is set here. */
+.genome-page .genome-tile-card [data-slot="card-content"] {
+  padding: 13px 15px;
+}
+.genome-page .genome-tiles .gene-glyph {
+  width: 34px;
+  height: 49px;
+}
+.genome-page .genome-tiles .text-2xl {
+  font-size: 1.35rem;
+  line-height: 1.15;
+}
+
+.genome-page .genome-tops {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.genome-page .genome-tops__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  padding-top: 0;
+}
+.genome-page .genome-tops__tabs {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* The scroller is absolutely positioned, and that is the whole trick.
+   Both cards share a grid row, so the row is as tall as its tallest content - which meant
+   twenty list rows dictated the height and stretched the three little stat cards to match,
+   the exact opposite of what was wanted. Absolutely-positioned content contributes no
+   intrinsic height, so the row is sized by the stat column alone and the list scrolls inside
+   whatever height that leaves. min-height:0 on each ancestor keeps the flex chain from
+   refusing to shrink. */
+.genome-page .genome-tops__pane {
+  position: relative;
+  flex: 1 1 auto;
+  margin: 0;
+  /* A floor, not a height. The three compact tiles alone left room for four rows of a list
+     of twenty, which is a scrollbar pretending to be a list. This lets the row grow past the
+     tiles when it needs to - the extra space then sits in the column beside the tiles rather
+     than being padded into them. */
+  min-height: 290px;
+}
+.genome-page .genome-tops__scroll {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+}
+/* Below the two-column breakpoint the cards stack, so there is no row to match and an
+   absolutely-positioned list would collapse to nothing. */
+@media (max-width: 899px) {
+  .genome-page .genome-tops__pane {
+    min-height: 340px;
+  }
+}
+
+.genome-page .genome-rank {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.genome-page .genome-rank__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  transition: background-color 120ms ease;
+}
+.genome-page .genome-rank__row:hover {
+  background: hsl(205 55% 65% / 0.05);
+}
+.genome-page .genome-rank__index {
+  flex: 0 0 auto;
+  font: 600 9.5px/1 var(--genome-mono);
+  letter-spacing: 0.12em;
+  color: var(--genome-tick);
+  width: 2ch;
+}
+.genome-page .genome-rank__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.genome-page .genome-rank__name {
+  font-family: var(--genome-text);
+  font-size: 12.5px;
+  color: hsl(210 14% 84%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.genome-page .genome-rank__meta {
+  font: 600 9px/1.3 var(--genome-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: hsl(215 8% 44%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- rhythm legend ---------------------------------------------------------------- */
+
+.genome-page .genome-rhythm__legend {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 12px;
+}
+.genome-page .genome-rhythm__swatch {
+  width: 15px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+/* ---- tabs ------------------------------------------------------------------------- */
+
+/* The default inactive trigger is a light surface, which on this page reads as the SELECTED
+   one - the contrast runs the wrong way against a dark card. Both states are restated here so
+   the active tab is the brighter of the two. */
+.genome-page [data-slot="tabs-list"] {
+  background: hsl(215 40% 60% / 0.06);
+  border: 1px solid var(--genome-panel-border);
+  border-radius: 7px;
+  padding: 3px;
+  gap: 3px;
+}
+.genome-page [data-slot="tabs-trigger"] {
+  font-family: var(--genome-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: hsl(215 10% 52%);
+  box-shadow: none;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.genome-page [data-slot="tabs-trigger"]:hover {
+  color: hsl(210 14% 76%);
+}
+.genome-page [data-slot="tabs-trigger"][data-state="active"] {
+  background: hsl(190 85% 62% / 0.13);
+  color: var(--genome-accent);
+  box-shadow: none;
+}

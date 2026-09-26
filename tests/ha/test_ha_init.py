@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
@@ -181,3 +181,24 @@ async def test_ws_get_errors_when_not_loaded(
     msg = await client.receive_json()
     assert not msg["success"]
     assert msg["error"]["code"] == "not_found"
+
+
+async def test_the_panel_is_in_the_sidebar_and_its_files_are_served(
+    hass: HomeAssistant, loaded_entry: MockConfigEntry, hass_client: Any
+) -> None:
+    """The sidebar entry exists while loaded, its module and fonts are served, and unload removes it."""
+    from homeassistant.components.frontend import DATA_PANELS
+
+    panel = hass.data[DATA_PANELS]["listening-genome"]
+    config = panel.config["_panel_custom"]
+    assert config["name"] == "listening-genome-panel"
+    assert config["module_url"].startswith("/listening_genome_static/listening-genome-panel.js?v=")
+    client = await hass_client()
+    module = await client.get(config["module_url"])
+    assert module.status == 200
+    assert "listening-genome-panel" in await module.text()
+    font = await client.get("/listening_genome_static/fonts/Jura-Medium.woff2")
+    assert font.status == 200
+    assert await hass.config_entries.async_unload(loaded_entry.entry_id)
+    await hass.async_block_till_done()
+    assert "listening-genome" not in hass.data[DATA_PANELS]

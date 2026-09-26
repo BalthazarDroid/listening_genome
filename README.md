@@ -3,9 +3,8 @@
 A listening-taste profile for Home Assistant, built from Music Assistant history, Last.fm and an
 Apple Music export.
 
-> **Status: phase 2 of 4.** The integration installs through HACS, keeps its history current and
-> publishes sensors. The sidebar panel (phase 3) is not written yet: imports are started from
-> *Developer tools → Actions* for now.
+> **Status: phase 3 of 4.** The integration installs through HACS, keeps its history current,
+> publishes sensors, and adds a **Listening Genome** page to the sidebar.
 
 ## What it does
 
@@ -60,6 +59,16 @@ which is Python 3.14 syntax; HA has shipped on 3.14 since 2026.3, and on an olde
 would not parse.
 
 ## Development
+
+The sidebar panel is Lit + TypeScript in `frontend/`, bundled into
+`custom_components/listening_genome/frontend/listening-genome-panel.js`. HACS installs the
+repository as it is and never builds, so **the built file is committed**: after changing
+anything in `frontend/src`, run `npm run build` there and commit the result.
+
+```sh
+cd frontend && npm install && npm run build && npx vitest run
+node dev/shoot.mjs /tmp/page.png "" 1400 1000 1   # screenshot the dev harness
+```
 
 ```sh
 python -m pytest tests/ -q

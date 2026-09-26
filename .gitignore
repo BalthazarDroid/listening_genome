@@ -5,3 +5,5 @@ __pycache__/
 .ruff_cache/
 *.db
 
+frontend/node_modules/
+frontend/dev/dist/

@@ -1,0 +1,1558 @@
+{
+    "schema_version": 1,
+    "engine_version": "1.0.0",
+    "baseline_version": "v1-2026-09",
+    "listener": "household",
+    "generated_at": 1757620800,
+    "stale": false,
+    "half_life_days": 548,
+    "stats": {
+        "total_listens": 4218,
+        "weighted_listens": 1806.42,
+        "distinct_artists": 187,
+        "distinct_tracks": 942,
+        "first_listen": 1609459200,
+        "last_listen": 1757612345,
+        "coverage_by_source": {
+            "ma_playlog": 2650,
+            "apple_export": 1340,
+            "lastfm": 228
+        },
+        "enrichment_coverage": 0.91,
+        "artists_pending": 137,
+        "artists_resolved": 812
+    },
+    "genres": [
+        {
+            "key": "prog_rock",
+            "label": "Progressive Rock",
+            "share": 0.17,
+            "baseline_share": 0.02,
+            "ratio": 8.5,
+            "contribution": 0.1649,
+            "base_mix": []
+        },
+        {
+            "key": "psychedelic_rock",
+            "label": "Psychedelic Rock",
+            "share": 0.13,
+            "baseline_share": 0.015,
+            "ratio": 8.6667,
+            "contribution": 0.1273,
+            "base_mix": []
+        },
+        {
+            "key": "krautrock",
+            "label": "Krautrock",
+            "share": 0.1,
+            "baseline_share": 0.004,
+            "ratio": 25.0,
+            "contribution": 0.1342,
+            "base_mix": []
+        },
+        {
+            "key": "post_punk",
+            "label": "Post-Punk",
+            "share": 0.09,
+            "baseline_share": 0.02,
+            "ratio": 4.5,
+            "contribution": 0.0586,
+            "base_mix": []
+        },
+        {
+            "key": "art_rock",
+            "label": "Art Rock",
+            "share": 0.09,
+            "baseline_share": 0.012,
+            "ratio": 7.5,
+            "contribution": 0.0822,
+            "base_mix": [0.5, 0.2, 0.1, 0.2]
+        },
+        {
+            "key": "jazz_fusion",
+            "label": "Jazz Fusion",
+            "share": 0.08,
+            "baseline_share": 0.01,
+            "ratio": 8.0,
+            "contribution": 0.0754,
+            "base_mix": [0.6, 0.1, 0.2, 0.1]
+        },
+        {
+            "key": "classic_rock",
+            "label": "Classic Rock",
+            "share": 0.08,
+            "baseline_share": 0.09,
+            "ratio": 0.8889,
+            "contribution": 0.0007,
+            "base_mix": [0.3, 0.3, 0.1, 0.3]
+        },
+        {
+            "key": "ambient",
+            "label": "Ambient",
+            "share": 0.07,
+            "baseline_share": 0.015,
+            "ratio": 4.6667,
+            "contribution": 0.047,
+            "base_mix": [0.1, 0.2, 0.3, 0.4]
+        },
+        {
+            "key": "indie_rock",
+            "label": "Indie Rock",
+            "share": 0.06,
+            "baseline_share": 0.11,
+            "ratio": 0.5455,
+            "contribution": 0.0182,
+            "base_mix": [0.1, 0.5, 0.1, 0.3]
+        },
+        {
+            "key": "folk_rock",
+            "label": "Folk Rock",
+            "share": 0.05,
+            "baseline_share": 0.03,
+            "ratio": 1.6667,
+            "contribution": 0.0062,
+            "base_mix": [0.4, 0.2, 0.1, 0.3]
+        },
+        {
+            "key": "pop",
+            "label": "Pop",
+            "share": 0.05,
+            "baseline_share": 0.22,
+            "ratio": 0.2273,
+            "contribution": 0.1406,
+            "base_mix": [0.2, 0.3, 0.2, 0.3]
+        },
+        {
+            "key": "hip_hop",
+            "label": "Hip-Hop",
+            "share": 0.03,
+            "baseline_share": 0.18,
+            "ratio": 0.1667,
+            "contribution": 0.1447,
+            "base_mix": []
+        }
+    ],
+    "bases": [
+        {
+            "key": "prog_rock",
+            "label": "Progressive Rock",
+            "share": 0.17,
+            "baseline_share": 0.02,
+            "ratio": 8.5,
+            "contribution": 0.1649,
+            "base_mix": []
+        },
+        {
+            "key": "psychedelic_rock",
+            "label": "Psychedelic Rock",
+            "share": 0.13,
+            "baseline_share": 0.015,
+            "ratio": 8.6667,
+            "contribution": 0.1273,
+            "base_mix": []
+        },
+        {
+            "key": "krautrock",
+            "label": "Krautrock",
+            "share": 0.1,
+            "baseline_share": 0.004,
+            "ratio": 25.0,
+            "contribution": 0.1342,
+            "base_mix": []
+        },
+        {
+            "key": "post_punk",
+            "label": "Post-Punk",
+            "share": 0.09,
+            "baseline_share": 0.02,
+            "ratio": 4.5,
+            "contribution": 0.0586,
+            "base_mix": []
+        }
+    ],
+    "divergence": {
+        "score": 0.62,
+        "percent": 62,
+        "top_over": [
+            {
+                "key": "prog_rock",
+                "label": "Progressive Rock",
+                "share": 0.17,
+                "baseline_share": 0.02,
+                "ratio": 8.5,
+                "contribution": 0.1649,
+                "base_mix": []
+            },
+            {
+                "key": "krautrock",
+                "label": "Krautrock",
+                "share": 0.1,
+                "baseline_share": 0.004,
+                "ratio": 25.0,
+                "contribution": 0.1342,
+                "base_mix": []
+            },
+            {
+                "key": "psychedelic_rock",
+                "label": "Psychedelic Rock",
+                "share": 0.13,
+                "baseline_share": 0.015,
+                "ratio": 8.6667,
+                "contribution": 0.1273,
+                "base_mix": []
+            },
+            {
+                "key": "art_rock",
+                "label": "Art Rock",
+                "share": 0.09,
+                "baseline_share": 0.012,
+                "ratio": 7.5,
+                "contribution": 0.0822,
+                "base_mix": []
+            },
+            {
+                "key": "jazz_fusion",
+                "label": "Jazz Fusion",
+                "share": 0.08,
+                "baseline_share": 0.01,
+                "ratio": 8.0,
+                "contribution": 0.0754,
+                "base_mix": []
+            }
+        ],
+        "top_under": [
+            {
+                "key": "hip_hop",
+                "label": "Hip-Hop",
+                "share": 0.03,
+                "baseline_share": 0.18,
+                "ratio": 0.1667,
+                "contribution": 0.1447,
+                "base_mix": []
+            },
+            {
+                "key": "pop",
+                "label": "Pop",
+                "share": 0.05,
+                "baseline_share": 0.22,
+                "ratio": 0.2273,
+                "contribution": 0.1406,
+                "base_mix": []
+            },
+            {
+                "key": "indie_rock",
+                "label": "Indie Rock",
+                "share": 0.06,
+                "baseline_share": 0.11,
+                "ratio": 0.5455,
+                "contribution": 0.0182,
+                "base_mix": []
+            },
+            {
+                "key": "classic_rock",
+                "label": "Classic Rock",
+                "share": 0.08,
+                "baseline_share": 0.09,
+                "ratio": 0.8889,
+                "contribution": 0.0007,
+                "base_mix": []
+            }
+        ]
+    },
+    "obscurity": {
+        "index": 0.58,
+        "percentile": 20,
+        "threshold_listeners": 150000,
+        "known_share": 0.91
+    },
+    "era": {
+        "center_of_mass": 1990.4,
+        "spread": 14.2,
+        "buckets": [
+            {
+                "decade": 1960,
+                "share": 0.06,
+                "baseline_share": 0.03
+            },
+            {
+                "decade": 1970,
+                "share": 0.42,
+                "baseline_share": 0.12
+            },
+            {
+                "decade": 1980,
+                "share": 0.14,
+                "baseline_share": 0.16
+            },
+            {
+                "decade": 1990,
+                "share": 0.05,
+                "baseline_share": 0.15
+            },
+            {
+                "decade": 2000,
+                "share": 0.04,
+                "baseline_share": 0.16
+            },
+            {
+                "decade": 2010,
+                "share": 0.21,
+                "baseline_share": 0.22
+            },
+            {
+                "decade": 2020,
+                "share": 0.08,
+                "baseline_share": 0.16
+            }
+        ],
+        "known_share": 0.88
+    },
+    "loyalty": {
+        "exploration_ratio": 0.22,
+        "concentration": 0.34,
+        "top_artist_share": 0.2103,
+        "new_artists_90d": 14,
+        "repeat_rate": 0.78
+    },
+    "top_artists": [
+        {
+            "name": "King Crimson",
+            "artist_key": "king_crimson",
+            "mbid": "mbid-kc-0001",
+            "plays": 812,
+            "weight": 752.66,
+            "share": 0.2103,
+            "lb_listeners": 41000,
+            "obscurity": 0.9883,
+            "ratio_vs_average": 0.08,
+            "genres": ["prog_rock", "art_rock"]
+        },
+        {
+            "name": "Can",
+            "artist_key": "can",
+            "mbid": "mbid-can-0001",
+            "plays": 640,
+            "weight": 571.14,
+            "share": 0.1596,
+            "lb_listeners": 22000,
+            "obscurity": 0.9937,
+            "ratio_vs_average": 0.04,
+            "genres": ["krautrock", "psychedelic_rock"]
+        },
+        {
+            "name": "Talking Heads",
+            "artist_key": "talking_heads",
+            "mbid": "mbid-th-0001",
+            "plays": 588,
+            "weight": 486.38,
+            "share": 0.1359,
+            "lb_listeners": 210000,
+            "obscurity": 0.94,
+            "ratio_vs_average": 0.42,
+            "genres": ["post_punk", "art_rock"]
+        },
+        {
+            "name": "Yes",
+            "artist_key": "yes",
+            "mbid": "mbid-yes-0001",
+            "plays": 511,
+            "weight": 439.04,
+            "share": 0.1227,
+            "lb_listeners": 95000,
+            "obscurity": 0.9729,
+            "ratio_vs_average": 0.19,
+            "genres": ["prog_rock"]
+        },
+        {
+            "name": "Weather Report",
+            "artist_key": "weather_report",
+            "mbid": "mbid-wr-0001",
+            "plays": 402,
+            "weight": 320.15,
+            "share": 0.0894,
+            "lb_listeners": 38000,
+            "obscurity": 0.9891,
+            "ratio_vs_average": 0.08,
+            "genres": ["jazz_fusion"]
+        },
+        {
+            "name": "Neu!",
+            "artist_key": "neu",
+            "mbid": "mbid-neu-0001",
+            "plays": 355,
+            "weight": 341.78,
+            "share": 0.0955,
+            "lb_listeners": 9000,
+            "obscurity": 0.9974,
+            "ratio_vs_average": 0.02,
+            "genres": ["krautrock", "ambient"]
+        },
+        {
+            "name": "Pink Floyd",
+            "artist_key": "pink_floyd",
+            "mbid": "mbid-pf-0001",
+            "plays": 301,
+            "weight": 222.19,
+            "share": 0.0621,
+            "lb_listeners": 3200000,
+            "obscurity": 0.0857,
+            "ratio_vs_average": 6.4,
+            "genres": ["psychedelic_rock", "classic_rock"]
+        },
+        {
+            "name": "Brian Eno",
+            "artist_key": "brian_eno",
+            "mbid": "mbid-be-0001",
+            "plays": 266,
+            "weight": 237.38,
+            "share": 0.0663,
+            "lb_listeners": 180000,
+            "obscurity": 0.9486,
+            "ratio_vs_average": 0.36,
+            "genres": ["ambient", "art_rock"]
+        },
+        {
+            "name": "Fleetwood Mac",
+            "artist_key": "fleetwood_mac",
+            "mbid": "mbid-fm-0001",
+            "plays": 210,
+            "weight": 133.19,
+            "share": 0.0372,
+            "lb_listeners": 2800000,
+            "obscurity": 0.2,
+            "ratio_vs_average": 5.6,
+            "genres": ["folk_rock", "classic_rock"]
+        },
+        {
+            "name": "Tame Impala",
+            "artist_key": "tame_impala",
+            "mbid": "mbid-ti-0001",
+            "plays": 174,
+            "weight": 75.51,
+            "share": 0.0211,
+            "lb_listeners": 1900000,
+            "obscurity": 0.4571,
+            "ratio_vs_average": 3.8,
+            "genres": ["indie_rock", "psychedelic_rock"]
+        }
+    ],
+    "top_tracks": [
+        {
+            "name": "Starless",
+            "artist": "King Crimson",
+            "track_key": "king_crimson::starless",
+            "plays": 96,
+            "weight": 88.98,
+            "share": 0.1693,
+            "year": 1974
+        },
+        {
+            "name": "Halleluwah",
+            "artist": "Can",
+            "track_key": "can::halleluwah",
+            "plays": 88,
+            "weight": 78.53,
+            "share": 0.1494,
+            "year": 1971
+        },
+        {
+            "name": "Once in a Lifetime",
+            "artist": "Talking Heads",
+            "track_key": "talking_heads::once_in_a_lifetime",
+            "plays": 81,
+            "weight": 67.0,
+            "share": 0.1275,
+            "year": 1980
+        },
+        {
+            "name": "Roundabout",
+            "artist": "Yes",
+            "track_key": "yes::roundabout",
+            "plays": 74,
+            "weight": 63.58,
+            "share": 0.1209,
+            "year": 1971
+        },
+        {
+            "name": "Birdland",
+            "artist": "Weather Report",
+            "track_key": "weather_report::birdland",
+            "plays": 63,
+            "weight": 50.17,
+            "share": 0.0954,
+            "year": 1977
+        },
+        {
+            "name": "Hallogallo",
+            "artist": "Neu!",
+            "track_key": "neu::hallogallo",
+            "plays": 58,
+            "weight": 55.84,
+            "share": 0.1062,
+            "year": 1972
+        },
+        {
+            "name": "Shine On You Crazy Diamond",
+            "artist": "Pink Floyd",
+            "track_key": "pink_floyd::shine_on",
+            "plays": 55,
+            "weight": 40.6,
+            "share": 0.0772,
+            "year": 1975
+        },
+        {
+            "name": "An Ending (Ascent)",
+            "artist": "Brian Eno",
+            "track_key": "brian_eno::an_ending",
+            "plays": 47,
+            "weight": 41.94,
+            "share": 0.0798,
+            "year": 1983
+        },
+        {
+            "name": "Dreams",
+            "artist": "Fleetwood Mac",
+            "track_key": "fleetwood_mac::dreams",
+            "plays": 39,
+            "weight": 24.73,
+            "share": 0.047,
+            "year": 1977
+        },
+        {
+            "name": "Let It Happen",
+            "artist": "Tame Impala",
+            "track_key": "tame_impala::let_it_happen",
+            "plays": 33,
+            "weight": 14.32,
+            "share": 0.0272,
+            "year": 2015
+        }
+    ],
+    "rhythm": [
+        {
+            "weekday": 0,
+            "hour": 0,
+            "weight": 0.2084,
+            "share": 0.001365
+        },
+        {
+            "weekday": 0,
+            "hour": 1,
+            "weight": 0.1715,
+            "share": 0.001123
+        },
+        {
+            "weekday": 0,
+            "hour": 2,
+            "weight": 0.1865,
+            "share": 0.001222
+        },
+        {
+            "weekday": 0,
+            "hour": 3,
+            "weight": 0.1834,
+            "share": 0.001201
+        },
+        {
+            "weekday": 0,
+            "hour": 4,
+            "weight": 0.2142,
+            "share": 0.001403
+        },
+        {
+            "weekday": 0,
+            "hour": 5,
+            "weight": 0.2106,
+            "share": 0.00138
+        },
+        {
+            "weekday": 0,
+            "hour": 6,
+            "weight": 0.5588,
+            "share": 0.003661
+        },
+        {
+            "weekday": 0,
+            "hour": 7,
+            "weight": 0.438,
+            "share": 0.002869
+        },
+        {
+            "weekday": 0,
+            "hour": 8,
+            "weight": 0.4883,
+            "share": 0.003199
+        },
+        {
+            "weekday": 0,
+            "hour": 9,
+            "weight": 0.4295,
+            "share": 0.002813
+        },
+        {
+            "weekday": 0,
+            "hour": 10,
+            "weight": 0.4578,
+            "share": 0.002999
+        },
+        {
+            "weekday": 0,
+            "hour": 11,
+            "weight": 0.5008,
+            "share": 0.003281
+        },
+        {
+            "weekday": 0,
+            "hour": 12,
+            "weight": 0.6864,
+            "share": 0.004496
+        },
+        {
+            "weekday": 0,
+            "hour": 13,
+            "weight": 0.7277,
+            "share": 0.004767
+        },
+        {
+            "weekday": 0,
+            "hour": 14,
+            "weight": 0.836,
+            "share": 0.005476
+        },
+        {
+            "weekday": 0,
+            "hour": 15,
+            "weight": 0.8108,
+            "share": 0.005311
+        },
+        {
+            "weekday": 0,
+            "hour": 16,
+            "weight": 0.7329,
+            "share": 0.004801
+        },
+        {
+            "weekday": 0,
+            "hour": 17,
+            "weight": 0.8214,
+            "share": 0.005381
+        },
+        {
+            "weekday": 0,
+            "hour": 18,
+            "weight": 1.9671,
+            "share": 0.012886
+        },
+        {
+            "weekday": 0,
+            "hour": 19,
+            "weight": 1.5335,
+            "share": 0.010046
+        },
+        {
+            "weekday": 0,
+            "hour": 20,
+            "weight": 1.9651,
+            "share": 0.012873
+        },
+        {
+            "weekday": 0,
+            "hour": 21,
+            "weight": 1.907,
+            "share": 0.012492
+        },
+        {
+            "weekday": 0,
+            "hour": 22,
+            "weight": 1.7137,
+            "share": 0.011226
+        },
+        {
+            "weekday": 0,
+            "hour": 23,
+            "weight": 1.614,
+            "share": 0.010573
+        },
+        {
+            "weekday": 1,
+            "hour": 0,
+            "weight": 0.2274,
+            "share": 0.00149
+        },
+        {
+            "weekday": 1,
+            "hour": 1,
+            "weight": 0.1902,
+            "share": 0.001246
+        },
+        {
+            "weekday": 1,
+            "hour": 2,
+            "weight": 0.1756,
+            "share": 0.00115
+        },
+        {
+            "weekday": 1,
+            "hour": 3,
+            "weight": 0.1758,
+            "share": 0.001152
+        },
+        {
+            "weekday": 1,
+            "hour": 4,
+            "weight": 0.2208,
+            "share": 0.001447
+        },
+        {
+            "weekday": 1,
+            "hour": 5,
+            "weight": 0.2062,
+            "share": 0.001351
+        },
+        {
+            "weekday": 1,
+            "hour": 6,
+            "weight": 0.5461,
+            "share": 0.003577
+        },
+        {
+            "weekday": 1,
+            "hour": 7,
+            "weight": 0.5345,
+            "share": 0.003501
+        },
+        {
+            "weekday": 1,
+            "hour": 8,
+            "weight": 0.5054,
+            "share": 0.003311
+        },
+        {
+            "weekday": 1,
+            "hour": 9,
+            "weight": 0.571,
+            "share": 0.00374
+        },
+        {
+            "weekday": 1,
+            "hour": 10,
+            "weight": 0.4818,
+            "share": 0.003156
+        },
+        {
+            "weekday": 1,
+            "hour": 11,
+            "weight": 0.5078,
+            "share": 0.003326
+        },
+        {
+            "weekday": 1,
+            "hour": 12,
+            "weight": 0.8791,
+            "share": 0.005758
+        },
+        {
+            "weekday": 1,
+            "hour": 13,
+            "weight": 0.8284,
+            "share": 0.005427
+        },
+        {
+            "weekday": 1,
+            "hour": 14,
+            "weight": 0.8868,
+            "share": 0.005809
+        },
+        {
+            "weekday": 1,
+            "hour": 15,
+            "weight": 0.8186,
+            "share": 0.005362
+        },
+        {
+            "weekday": 1,
+            "hour": 16,
+            "weight": 0.8491,
+            "share": 0.005562
+        },
+        {
+            "weekday": 1,
+            "hour": 17,
+            "weight": 0.691,
+            "share": 0.004526
+        },
+        {
+            "weekday": 1,
+            "hour": 18,
+            "weight": 1.6531,
+            "share": 0.010829
+        },
+        {
+            "weekday": 1,
+            "hour": 19,
+            "weight": 1.6863,
+            "share": 0.011046
+        },
+        {
+            "weekday": 1,
+            "hour": 20,
+            "weight": 1.5731,
+            "share": 0.010305
+        },
+        {
+            "weekday": 1,
+            "hour": 21,
+            "weight": 1.6557,
+            "share": 0.010846
+        },
+        {
+            "weekday": 1,
+            "hour": 22,
+            "weight": 1.5845,
+            "share": 0.01038
+        },
+        {
+            "weekday": 1,
+            "hour": 23,
+            "weight": 1.6801,
+            "share": 0.011006
+        },
+        {
+            "weekday": 2,
+            "hour": 0,
+            "weight": 0.2081,
+            "share": 0.001363
+        },
+        {
+            "weekday": 2,
+            "hour": 1,
+            "weight": 0.1919,
+            "share": 0.001257
+        },
+        {
+            "weekday": 2,
+            "hour": 2,
+            "weight": 0.1922,
+            "share": 0.001259
+        },
+        {
+            "weekday": 2,
+            "hour": 3,
+            "weight": 0.1826,
+            "share": 0.001196
+        },
+        {
+            "weekday": 2,
+            "hour": 4,
+            "weight": 0.186,
+            "share": 0.001219
+        },
+        {
+            "weekday": 2,
+            "hour": 5,
+            "weight": 0.2262,
+            "share": 0.001482
+        },
+        {
+            "weekday": 2,
+            "hour": 6,
+            "weight": 0.5222,
+            "share": 0.003421
+        },
+        {
+            "weekday": 2,
+            "hour": 7,
+            "weight": 0.5164,
+            "share": 0.003383
+        },
+        {
+            "weekday": 2,
+            "hour": 8,
+            "weight": 0.4507,
+            "share": 0.002952
+        },
+        {
+            "weekday": 2,
+            "hour": 9,
+            "weight": 0.5344,
+            "share": 0.0035
+        },
+        {
+            "weekday": 2,
+            "hour": 10,
+            "weight": 0.4495,
+            "share": 0.002945
+        },
+        {
+            "weekday": 2,
+            "hour": 11,
+            "weight": 0.4819,
+            "share": 0.003157
+        },
+        {
+            "weekday": 2,
+            "hour": 12,
+            "weight": 0.9175,
+            "share": 0.00601
+        },
+        {
+            "weekday": 2,
+            "hour": 13,
+            "weight": 0.8336,
+            "share": 0.005461
+        },
+        {
+            "weekday": 2,
+            "hour": 14,
+            "weight": 0.8137,
+            "share": 0.00533
+        },
+        {
+            "weekday": 2,
+            "hour": 15,
+            "weight": 0.8443,
+            "share": 0.005531
+        },
+        {
+            "weekday": 2,
+            "hour": 16,
+            "weight": 0.8823,
+            "share": 0.00578
+        },
+        {
+            "weekday": 2,
+            "hour": 17,
+            "weight": 0.8662,
+            "share": 0.005674
+        },
+        {
+            "weekday": 2,
+            "hour": 18,
+            "weight": 1.6537,
+            "share": 0.010833
+        },
+        {
+            "weekday": 2,
+            "hour": 19,
+            "weight": 1.5473,
+            "share": 0.010136
+        },
+        {
+            "weekday": 2,
+            "hour": 20,
+            "weight": 1.7003,
+            "share": 0.011138
+        },
+        {
+            "weekday": 2,
+            "hour": 21,
+            "weight": 1.6746,
+            "share": 0.01097
+        },
+        {
+            "weekday": 2,
+            "hour": 22,
+            "weight": 1.6439,
+            "share": 0.010769
+        },
+        {
+            "weekday": 2,
+            "hour": 23,
+            "weight": 2.0392,
+            "share": 0.013358
+        },
+        {
+            "weekday": 3,
+            "hour": 0,
+            "weight": 0.2226,
+            "share": 0.001458
+        },
+        {
+            "weekday": 3,
+            "hour": 1,
+            "weight": 0.1889,
+            "share": 0.001237
+        },
+        {
+            "weekday": 3,
+            "hour": 2,
+            "weight": 0.2093,
+            "share": 0.001371
+        },
+        {
+            "weekday": 3,
+            "hour": 3,
+            "weight": 0.1937,
+            "share": 0.001269
+        },
+        {
+            "weekday": 3,
+            "hour": 4,
+            "weight": 0.2249,
+            "share": 0.001473
+        },
+        {
+            "weekday": 3,
+            "hour": 5,
+            "weight": 0.1975,
+            "share": 0.001294
+        },
+        {
+            "weekday": 3,
+            "hour": 6,
+            "weight": 0.4647,
+            "share": 0.003044
+        },
+        {
+            "weekday": 3,
+            "hour": 7,
+            "weight": 0.462,
+            "share": 0.003026
+        },
+        {
+            "weekday": 3,
+            "hour": 8,
+            "weight": 0.5092,
+            "share": 0.003336
+        },
+        {
+            "weekday": 3,
+            "hour": 9,
+            "weight": 0.4644,
+            "share": 0.003042
+        },
+        {
+            "weekday": 3,
+            "hour": 10,
+            "weight": 0.5127,
+            "share": 0.003358
+        },
+        {
+            "weekday": 3,
+            "hour": 11,
+            "weight": 0.5597,
+            "share": 0.003666
+        },
+        {
+            "weekday": 3,
+            "hour": 12,
+            "weight": 0.7759,
+            "share": 0.005082
+        },
+        {
+            "weekday": 3,
+            "hour": 13,
+            "weight": 0.7326,
+            "share": 0.004799
+        },
+        {
+            "weekday": 3,
+            "hour": 14,
+            "weight": 0.9194,
+            "share": 0.006023
+        },
+        {
+            "weekday": 3,
+            "hour": 15,
+            "weight": 0.8023,
+            "share": 0.005256
+        },
+        {
+            "weekday": 3,
+            "hour": 16,
+            "weight": 0.7018,
+            "share": 0.004597
+        },
+        {
+            "weekday": 3,
+            "hour": 17,
+            "weight": 0.6913,
+            "share": 0.004529
+        },
+        {
+            "weekday": 3,
+            "hour": 18,
+            "weight": 1.5892,
+            "share": 0.01041
+        },
+        {
+            "weekday": 3,
+            "hour": 19,
+            "weight": 1.8688,
+            "share": 0.012242
+        },
+        {
+            "weekday": 3,
+            "hour": 20,
+            "weight": 1.9577,
+            "share": 0.012824
+        },
+        {
+            "weekday": 3,
+            "hour": 21,
+            "weight": 1.758,
+            "share": 0.011516
+        },
+        {
+            "weekday": 3,
+            "hour": 22,
+            "weight": 1.5643,
+            "share": 0.010247
+        },
+        {
+            "weekday": 3,
+            "hour": 23,
+            "weight": 1.7361,
+            "share": 0.011372
+        },
+        {
+            "weekday": 4,
+            "hour": 0,
+            "weight": 0.2298,
+            "share": 0.001505
+        },
+        {
+            "weekday": 4,
+            "hour": 1,
+            "weight": 0.2017,
+            "share": 0.001322
+        },
+        {
+            "weekday": 4,
+            "hour": 2,
+            "weight": 0.2283,
+            "share": 0.001495
+        },
+        {
+            "weekday": 4,
+            "hour": 3,
+            "weight": 0.2216,
+            "share": 0.001452
+        },
+        {
+            "weekday": 4,
+            "hour": 4,
+            "weight": 0.1707,
+            "share": 0.001118
+        },
+        {
+            "weekday": 4,
+            "hour": 5,
+            "weight": 0.2132,
+            "share": 0.001397
+        },
+        {
+            "weekday": 4,
+            "hour": 6,
+            "weight": 0.5273,
+            "share": 0.003454
+        },
+        {
+            "weekday": 4,
+            "hour": 7,
+            "weight": 0.5055,
+            "share": 0.003312
+        },
+        {
+            "weekday": 4,
+            "hour": 8,
+            "weight": 0.465,
+            "share": 0.003046
+        },
+        {
+            "weekday": 4,
+            "hour": 9,
+            "weight": 0.5211,
+            "share": 0.003414
+        },
+        {
+            "weekday": 4,
+            "hour": 10,
+            "weight": 0.4417,
+            "share": 0.002894
+        },
+        {
+            "weekday": 4,
+            "hour": 11,
+            "weight": 0.4902,
+            "share": 0.003211
+        },
+        {
+            "weekday": 4,
+            "hour": 12,
+            "weight": 0.7889,
+            "share": 0.005168
+        },
+        {
+            "weekday": 4,
+            "hour": 13,
+            "weight": 0.9089,
+            "share": 0.005954
+        },
+        {
+            "weekday": 4,
+            "hour": 14,
+            "weight": 0.8902,
+            "share": 0.005831
+        },
+        {
+            "weekday": 4,
+            "hour": 15,
+            "weight": 0.7432,
+            "share": 0.004869
+        },
+        {
+            "weekday": 4,
+            "hour": 16,
+            "weight": 0.8001,
+            "share": 0.005241
+        },
+        {
+            "weekday": 4,
+            "hour": 17,
+            "weight": 0.7229,
+            "share": 0.004735
+        },
+        {
+            "weekday": 4,
+            "hour": 18,
+            "weight": 2.0228,
+            "share": 0.013251
+        },
+        {
+            "weekday": 4,
+            "hour": 19,
+            "weight": 2.0001,
+            "share": 0.013102
+        },
+        {
+            "weekday": 4,
+            "hour": 20,
+            "weight": 1.6912,
+            "share": 0.011078
+        },
+        {
+            "weekday": 4,
+            "hour": 21,
+            "weight": 1.875,
+            "share": 0.012283
+        },
+        {
+            "weekday": 4,
+            "hour": 22,
+            "weight": 1.8588,
+            "share": 0.012177
+        },
+        {
+            "weekday": 4,
+            "hour": 23,
+            "weight": 1.6125,
+            "share": 0.010563
+        },
+        {
+            "weekday": 5,
+            "hour": 0,
+            "weight": 0.3021,
+            "share": 0.001979
+        },
+        {
+            "weekday": 5,
+            "hour": 1,
+            "weight": 0.2833,
+            "share": 0.001856
+        },
+        {
+            "weekday": 5,
+            "hour": 2,
+            "weight": 0.3034,
+            "share": 0.001988
+        },
+        {
+            "weekday": 5,
+            "hour": 3,
+            "weight": 0.2825,
+            "share": 0.001851
+        },
+        {
+            "weekday": 5,
+            "hour": 4,
+            "weight": 0.238,
+            "share": 0.001559
+        },
+        {
+            "weekday": 5,
+            "hour": 5,
+            "weight": 0.2652,
+            "share": 0.001737
+        },
+        {
+            "weekday": 5,
+            "hour": 6,
+            "weight": 0.5991,
+            "share": 0.003924
+        },
+        {
+            "weekday": 5,
+            "hour": 7,
+            "weight": 0.7901,
+            "share": 0.005176
+        },
+        {
+            "weekday": 5,
+            "hour": 8,
+            "weight": 0.7795,
+            "share": 0.005106
+        },
+        {
+            "weekday": 5,
+            "hour": 9,
+            "weight": 0.7696,
+            "share": 0.005042
+        },
+        {
+            "weekday": 5,
+            "hour": 10,
+            "weight": 0.6596,
+            "share": 0.004321
+        },
+        {
+            "weekday": 5,
+            "hour": 11,
+            "weight": 0.6072,
+            "share": 0.003977
+        },
+        {
+            "weekday": 5,
+            "hour": 12,
+            "weight": 1.247,
+            "share": 0.008169
+        },
+        {
+            "weekday": 5,
+            "hour": 13,
+            "weight": 1.2702,
+            "share": 0.00832
+        },
+        {
+            "weekday": 5,
+            "hour": 14,
+            "weight": 0.9808,
+            "share": 0.006425
+        },
+        {
+            "weekday": 5,
+            "hour": 15,
+            "weight": 1.1153,
+            "share": 0.007306
+        },
+        {
+            "weekday": 5,
+            "hour": 16,
+            "weight": 0.9753,
+            "share": 0.006389
+        },
+        {
+            "weekday": 5,
+            "hour": 17,
+            "weight": 1.2076,
+            "share": 0.00791
+        },
+        {
+            "weekday": 5,
+            "hour": 18,
+            "weight": 2.721,
+            "share": 0.017824
+        },
+        {
+            "weekday": 5,
+            "hour": 19,
+            "weight": 2.2391,
+            "share": 0.014667
+        },
+        {
+            "weekday": 5,
+            "hour": 20,
+            "weight": 2.5013,
+            "share": 0.016385
+        },
+        {
+            "weekday": 5,
+            "hour": 21,
+            "weight": 2.5577,
+            "share": 0.016754
+        },
+        {
+            "weekday": 5,
+            "hour": 22,
+            "weight": 2.3424,
+            "share": 0.015344
+        },
+        {
+            "weekday": 5,
+            "hour": 23,
+            "weight": 2.8016,
+            "share": 0.018352
+        },
+        {
+            "weekday": 6,
+            "hour": 0,
+            "weight": 0.2735,
+            "share": 0.001792
+        },
+        {
+            "weekday": 6,
+            "hour": 1,
+            "weight": 0.2558,
+            "share": 0.001676
+        },
+        {
+            "weekday": 6,
+            "hour": 2,
+            "weight": 0.2833,
+            "share": 0.001856
+        },
+        {
+            "weekday": 6,
+            "hour": 3,
+            "weight": 0.2993,
+            "share": 0.001961
+        },
+        {
+            "weekday": 6,
+            "hour": 4,
+            "weight": 0.2549,
+            "share": 0.00167
+        },
+        {
+            "weekday": 6,
+            "hour": 5,
+            "weight": 0.2642,
+            "share": 0.001731
+        },
+        {
+            "weekday": 6,
+            "hour": 6,
+            "weight": 0.804,
+            "share": 0.005267
+        },
+        {
+            "weekday": 6,
+            "hour": 7,
+            "weight": 0.7315,
+            "share": 0.004792
+        },
+        {
+            "weekday": 6,
+            "hour": 8,
+            "weight": 0.687,
+            "share": 0.0045
+        },
+        {
+            "weekday": 6,
+            "hour": 9,
+            "weight": 0.7037,
+            "share": 0.00461
+        },
+        {
+            "weekday": 6,
+            "hour": 10,
+            "weight": 0.6204,
+            "share": 0.004064
+        },
+        {
+            "weekday": 6,
+            "hour": 11,
+            "weight": 0.6422,
+            "share": 0.004207
+        },
+        {
+            "weekday": 6,
+            "hour": 12,
+            "weight": 1.0656,
+            "share": 0.00698
+        },
+        {
+            "weekday": 6,
+            "hour": 13,
+            "weight": 1.1497,
+            "share": 0.007531
+        },
+        {
+            "weekday": 6,
+            "hour": 14,
+            "weight": 1.0293,
+            "share": 0.006743
+        },
+        {
+            "weekday": 6,
+            "hour": 15,
+            "weight": 1.026,
+            "share": 0.006721
+        },
+        {
+            "weekday": 6,
+            "hour": 16,
+            "weight": 0.9759,
+            "share": 0.006392
+        },
+        {
+            "weekday": 6,
+            "hour": 17,
+            "weight": 1.1641,
+            "share": 0.007625
+        },
+        {
+            "weekday": 6,
+            "hour": 18,
+            "weight": 2.3151,
+            "share": 0.015165
+        },
+        {
+            "weekday": 6,
+            "hour": 19,
+            "weight": 2.8265,
+            "share": 0.018515
+        },
+        {
+            "weekday": 6,
+            "hour": 20,
+            "weight": 2.7919,
+            "share": 0.018289
+        },
+        {
+            "weekday": 6,
+            "hour": 21,
+            "weight": 2.1956,
+            "share": 0.014382
+        },
+        {
+            "weekday": 6,
+            "hour": 22,
+            "weight": 2.3219,
+            "share": 0.01521
+        },
+        {
+            "weekday": 6,
+            "hour": 23,
+            "weight": 2.6477,
+            "share": 0.017345
+        }
+    ],
+    "players": [
+        {
+            "player_id": "living_room_homepod",
+            "name": "Living Room",
+            "share": 0.52
+        },
+        {
+            "player_id": "kitchen_sonos",
+            "name": "Kitchen",
+            "share": 0.31
+        },
+        {
+            "player_id": "office_airplay",
+            "name": "Office",
+            "share": 0.17
+        }
+    ]
+}

@@ -40,6 +40,7 @@ from .core.operations import GenomeOperations
 from .core.service import GenomeService, GenomeServiceSettings
 from .core.store import GenomeStore
 from .live_capture import MusicAssistantCapture
+from .panel import async_register_panel, async_remove_panel
 from .runtime import ListeningGenomeData
 from .services import async_register_services
 from .websocket_api import async_register_websocket_commands
@@ -167,6 +168,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ListeningGenomeConfigEnt
     entry.runtime_data = runtime
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     runtime.async_start_schedules()
+    await async_register_panel(hass)
     capture.async_start()
     # a stop does not unload entries: write the plays still open while the store is still open
     entry.async_on_unload(
@@ -181,6 +183,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ListeningGenomeConfigEn
     """Unload the platforms, stop the schedules and in-flight work, and close the store."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
+        async_remove_panel(hass)
         runtime = entry.runtime_data
         await runtime.async_shutdown()
         await runtime.store.close()
