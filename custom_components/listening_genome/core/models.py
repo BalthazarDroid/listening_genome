@@ -397,6 +397,8 @@ class ColdArtist(DataClassDictMixin):
     plays: int
     genre_key: str | None
     genre_label: str | None
+    #: one of their tracks in the library to try (the panel plays it), or ``None``
+    song: str | None = None
 
 
 @dataclass(frozen=True)
@@ -409,6 +411,8 @@ class SuggestedArtist(DataClassDictMixin):
     genre_key: str | None
     genre_label: str | None
     match: float
+    #: their most popular song on Last.fm that the household has not played much, or ``None``
+    song: str | None = None
 
 
 @dataclass(frozen=True)

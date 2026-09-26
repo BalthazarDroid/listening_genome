@@ -26,9 +26,11 @@ from homeassistant.helpers.event import (
     async_track_time_change,
     async_track_time_interval,
 )
+from homeassistant.util import dt as dt_util
 
-from .const import ENRICHMENT_INTERVAL, LASTFM_STARTUP_POLL_DELAY
-from .core.constants import LOGGER
+from .const import DISCOVERY_STARTUP_DELAY, ENRICHMENT_INTERVAL, LASTFM_STARTUP_POLL_DELAY
+from .core.constants import GENOME_DISCOVERY_REFRESH_INTERVAL_HOURS, LOGGER
+from .ma_library import MusicAssistantLibrary
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -81,6 +83,9 @@ class ListeningGenomeData:
                     cancel_on_shutdown=True,
                 )
             )
+        self._unsubscribers.append(
+            async_call_later(self.hass, DISCOVERY_STARTUP_DELAY, self._handle_discovery_startup)
+        )
         lastfm = self.settings.lastfm_poll_enabled and self.settings.lastfm_configured
         if lastfm:
             self._unsubscribers.append(
@@ -177,6 +182,34 @@ class ListeningGenomeData:
         )
 
     @callback
+    def async_request_discovery(self) -> bool:
+        """Start a discovery pass in the background; ``False`` if one is already running."""
+        if self.operations.discovery_running:
+            return False
+        self._spawn(self._background_discovery(), "Listening Genome discovery")
+        return True
+
+    @callback
+    def _handle_discovery_startup(self, now: datetime) -> None:
+        """Start-up: refresh discovery if the stored pass is missing or more than a day old."""
+        self._spawn(self._discovery_if_stale(), "Listening Genome discovery (start-up)")
+
+    async def _discovery_if_stale(self) -> None:
+        cached = await self.store.get_cached_discovery("household") or {}
+        age = dt_util.utcnow().timestamp() - float(cached.get("generated_at") or 0)
+        if age >= GENOME_DISCOVERY_REFRESH_INTERVAL_HOURS * 3600:
+            await self._background_discovery()
+
+    async def _background_discovery(self) -> None:
+        client = self.capture.client
+        library = MusicAssistantLibrary(client) if client is not None else None
+        api_key = self.settings.lastfm_api_key if self.settings.lastfm_configured else None
+        try:
+            await self.operations.discover(library, api_key)
+        except Exception:  # recorded on the job
+            LOGGER.warning("Listening Genome discovery pass failed", exc_info=True)
+
+    @callback
     def async_request_duplicate_cleanup(self) -> None:
         """Run the one-time duplicate cleanup in the background (a no-op once it has run)."""
         self._spawn(self._background_duplicate_cleanup(), "Listening Genome duplicate cleanup")
@@ -229,7 +262,7 @@ class ListeningGenomeData:
     @callback
     def _handle_daily_rebuild(self, now: datetime) -> None:
         """Time-change listener: the daily rebuild."""
-        self.async_request_rebuild("daily schedule")
+        self.async_request_rebuild(DAILY_REBUILD_REASON)
 
     @callback
     def _handle_enrichment_interval(self, now: datetime) -> None:
@@ -243,6 +276,10 @@ class ListeningGenomeData:
             await self.async_rebuild()
         except Exception:
             LOGGER.exception("Listening Genome rebuild (%s) failed", reason)
+            return
+        if reason == DAILY_REBUILD_REASON:
+            # the genome it steers by has just been recomputed: a daily discovery pass
+            await self._background_discovery()
 
     async def _background_enrichment(self) -> EnrichmentReport | None:
         """Run one enrichment pass; the operation records and logs its own outcome."""
@@ -256,6 +293,9 @@ class ListeningGenomeData:
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
         return task
+
+
+DAILY_REBUILD_REASON = "daily schedule"
 
 
 def _remove_file(path: str) -> None:

@@ -162,6 +162,11 @@ class MusicAssistantCapture:
 
         return remove
 
+    @property
+    def client(self) -> MusicAssistantClient | None:
+        """The connected client, or ``None`` while Music Assistant is not connected."""
+        return self._client if self.status.connected else None
+
     def player_name(self, player_id: str) -> str | None:
         """The display name MA last gave a player (the store's ``player_name_resolver``)."""
         return self.player_names.get(player_id)

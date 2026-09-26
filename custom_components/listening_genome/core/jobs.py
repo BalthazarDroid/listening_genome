@@ -42,6 +42,8 @@ JOB_LASTFM_IMPORT = "lastfm_import"
 JOB_APPLE_IMPORT = "apple_import"
 # 2c's duplicate removal: once over the whole history, then after every import
 JOB_DUPLICATES = "duplicates"
+# 2d's discovery pass (daily, or on request)
+JOB_DISCOVERY = "discovery"
 
 #: the jobs this integration runs, in the order a UI shows them; each always has a state
 ALL_JOBS: tuple[str, ...] = (
@@ -50,6 +52,7 @@ ALL_JOBS: tuple[str, ...] = (
     JOB_LASTFM_IMPORT,
     JOB_APPLE_IMPORT,
     JOB_DUPLICATES,
+    JOB_DISCOVERY,
 )
 
 #: every job id :meth:`JobTracker.load` restores; anything else in the stored map is dropped

@@ -494,8 +494,9 @@ async def test_polling_on_schedules_an_early_poll_and_the_interval(
     await hass.config_entries.async_reload(with_lastfm.entry_id)
     await hass.async_block_till_done()
     runtime = with_lastfm.runtime_data
-    # daily rebuild, hourly enrichment, the Last.fm interval and its start-up one-shot
-    assert len(runtime._unsubscribers) == 4
+    # daily rebuild, hourly enrichment, the discovery start-up check, the Last.fm interval and
+    # its start-up one-shot
+    assert len(runtime._unsubscribers) == 5
     runtime._handle_lastfm_interval(None)
     await asyncio.gather(*runtime._tasks)
     assert runtime.jobs.get("lastfm_import")["state"] == "ok"

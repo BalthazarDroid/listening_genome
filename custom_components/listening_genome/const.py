@@ -44,6 +44,14 @@ WS_TYPE_DISMISS_UNRESOLVED: Final = f"{DOMAIN}/dismiss_unresolved"
 WS_TYPE_IMPORT_LASTFM: Final = f"{DOMAIN}/import_lastfm"
 WS_TYPE_IMPORT_APPLE: Final = f"{DOMAIN}/import_apple"
 WS_TYPE_LIVE: Final = f"{DOMAIN}/live"
+WS_TYPE_DISCOVERY: Final = f"{DOMAIN}/discovery"
+WS_TYPE_DISCOVERY_REFRESH: Final = f"{DOMAIN}/discovery_refresh"
+WS_TYPE_PLAYERS: Final = f"{DOMAIN}/players"
+WS_TYPE_PLAY: Final = f"{DOMAIN}/play"
+
+# the first discovery pass after start-up, when the stored one is missing or a day old: late
+# enough for the Music Assistant session to be up (the library is read through it)
+DISCOVERY_STARTUP_DELAY: Final = timedelta(minutes=5)
 
 # actions
 SERVICE_IMPORT_LASTFM: Final = "import_lastfm"

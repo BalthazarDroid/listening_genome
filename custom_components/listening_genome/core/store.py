@@ -101,6 +101,9 @@ _LASTFM_RESUME_KEY = "lastfm_resume_after"
 # account starts again from its own beginning.
 _LASTFM_ACCOUNT_KEY = "lastfm_account"
 
+# settings-table key: the speaker the last discovery song was played on (the picker's default)
+_LAST_PLAYER_KEY = "discovery_last_player"
+
 # settings-table key recording that the one-time duplicate cleanup (2c) has run over the whole
 # history. Imports after that clean only their own time range.
 _DUPLICATE_CLEANUP_DONE_KEY = "duplicate_cleanup_v1_done"
@@ -756,6 +759,17 @@ class GenomeStore:
         )
         await self.database.commit()
 
+    async def track_play_counts(self, listener: str, artist_key: str) -> dict[str, int]:
+        """Return ``{track_key: plays}`` for one artist's stored listens (discovery's songs)."""
+        assert self.database is not None
+        rows = await self.database.get_rows_from_query(
+            f"SELECT track_key, COUNT(*) AS n FROM {DB_TABLE_GENOME_LISTENS} "
+            "WHERE listener = :listener AND artist_key = :artist_key GROUP BY track_key",
+            {"listener": listener, "artist_key": artist_key},
+            limit=0,
+        )
+        return {row["track_key"]: int(row["n"]) for row in rows}
+
     async def artist_play_counts(self, listener: str) -> dict[str, int]:
         """
         Return ``{artist_key: stored_listen_count}`` for ``listener``.
@@ -1002,6 +1016,20 @@ class GenomeStore:
             )
         await self.database.commit()
         return reset
+
+    async def last_player(self) -> str | None:
+        """The media player the last discovery song was played on, if any."""
+        assert self.database is not None
+        row = await self.database.get_row(DB_TABLE_SETTINGS, {"key": _LAST_PLAYER_KEY})
+        return str(row["value"]) if row is not None and row["value"] else None
+
+    async def set_last_player(self, entity_id: str) -> None:
+        """Remember the speaker a discovery song was just played on."""
+        assert self.database is not None
+        await self.database.insert_or_replace(
+            DB_TABLE_SETTINGS, {"key": _LAST_PLAYER_KEY, "value": entity_id, "type": "str"}
+        )
+        await self.database.commit()
 
     async def duplicate_cleanup_done(self) -> bool:
         """Return whether the one-time whole-history duplicate cleanup has run."""

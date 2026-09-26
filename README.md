@@ -19,6 +19,10 @@ Apple Music export.
   (action `listening_genome.import_apple_csv`, or an upload over the websocket API).
 - **No double counting.** A Last.fm scrobble of a play Apple's export or Music Assistant already
   recorded is removed — once over the whole history, then after every import.
+- **Music discovery.** Once a day, artists worth trying: Last.fm's similar artists for the
+  genres where your taste stands out, and barely played artists already in your library — each
+  with one song. The websocket API plays that one song on a Music Assistant speaker you pick
+  (the panel's play button, in phase 3).
 - **Keeps itself current.** Rebuilds daily at 04:00, looks new artists up on MusicBrainz and
   ListenBrainz hourly, and has a *Rebuild now* button.
 - **Sensors:** obscurity index, divergence, top artist, listens stored, last rebuild.

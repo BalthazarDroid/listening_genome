@@ -20,9 +20,10 @@ from typing import TYPE_CHECKING, Any
 from ..core.constants import (
     LASTFM_BASE_URL,
     LASTFM_SIMILAR_METHOD,
+    LASTFM_TOP_TRACKS_METHOD,
 )
 from ..core.errors import LastfmApiError
-from .lastfm import describe_fetch_error
+from ..importers.lastfm import describe_fetch_error
 
 if TYPE_CHECKING:
     from ..core.http import HttpClient
@@ -76,6 +77,39 @@ async def fetch_similar_artists(
     return _parse_similar(data, limit=limit)
 
 
+async def fetch_top_tracks(
+    artist_name: str, *, client: HttpClient, api_key: str, limit: int
+) -> tuple[str, ...]:
+    """
+    Fetch an artist's most popular track titles on Last.fm, most popular first.
+
+    Same error contract as :func:`fetch_similar_artists`: :class:`LastfmApiError` with a
+    message that never contains the key; an artist with no tracks is an empty tuple.
+    """
+    params = {
+        "method": LASTFM_TOP_TRACKS_METHOD,
+        "artist": artist_name,
+        "api_key": api_key,
+        "format": "json",
+        "limit": str(limit),
+        "autocorrect": "1",
+    }
+    try:
+        data = await client.get_json(LASTFM_BASE_URL, params=params)
+    except Exception as err:
+        raise LastfmApiError(describe_fetch_error(err)) from err
+    if isinstance(data, dict) and data.get("error") is not None:
+        raise LastfmApiError(str(data.get("message") or "Last.fm rejected the request."))
+    container = data.get("toptracks") if isinstance(data, dict) else None
+    entries = container.get("track") if isinstance(container, dict) else None
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list):
+        return ()
+    names = [str(entry.get("name") or "").strip() for entry in entries if isinstance(entry, dict)]
+    return tuple(name for name in names if name)[:limit]
+
+
 def _parse_similar(data: Any, *, limit: int) -> tuple[SimilarArtist, ...]:
     """Normalize a ``similarartists`` payload, skipping entries without a usable name."""
     container = data.get("similarartists") if isinstance(data, dict) else None
@@ -108,4 +142,4 @@ def _parse_match(value: Any) -> float:
     return min(max(match, 0.0), 1.0)
 
 
-__all__ = ["SimilarArtist", "fetch_similar_artists"]
+__all__ = ["SimilarArtist", "fetch_similar_artists", "fetch_top_tracks"]

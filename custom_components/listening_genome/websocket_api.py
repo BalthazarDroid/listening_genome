@@ -15,21 +15,27 @@ from typing import TYPE_CHECKING, Any
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     DOMAIN,
+    WS_TYPE_DISCOVERY,
+    WS_TYPE_DISCOVERY_REFRESH,
     WS_TYPE_DISMISS_UNRESOLVED,
     WS_TYPE_GET,
     WS_TYPE_IMPORT_APPLE,
     WS_TYPE_IMPORT_LASTFM,
     WS_TYPE_JOBS,
     WS_TYPE_LIVE,
+    WS_TYPE_PLAY,
+    WS_TYPE_PLAYERS,
     WS_TYPE_REBUILD,
     WS_TYPE_RETRY_ARTISTS,
     WS_TYPE_UNRESOLVED_ARTISTS,
 )
 from .core.constants import LOGGER
-from .core.jobs import JOB_APPLE_IMPORT, JOB_LASTFM_IMPORT
+from .core.jobs import JOB_APPLE_IMPORT, JOB_DISCOVERY, JOB_LASTFM_IMPORT
 from .uploads import UploadError, async_take_upload
 
 if TYPE_CHECKING:
@@ -41,6 +47,12 @@ ERR_REBUILD_FAILED = "rebuild_failed"
 ERR_NOT_CONFIGURED = "not_configured"
 ERR_ALREADY_RUNNING = "already_running"
 ERR_UPLOAD = "upload_failed"
+ERR_PLAY_FAILED = "play_failed"
+ERR_NOT_A_SPEAKER = "not_a_speaker"
+
+# Home Assistant's Music Assistant integration, whose play_media action plays a discovery song
+MA_DOMAIN = "music_assistant"
+MA_SERVICE_PLAY_MEDIA = "play_media"
 
 
 @callback
@@ -56,6 +68,10 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
         ws_import_lastfm,
         ws_import_apple,
         ws_live,
+        ws_discovery,
+        ws_discovery_refresh,
+        ws_players,
+        ws_play,
     ):
         websocket_api.async_register_command(hass, command)
 
@@ -254,3 +270,128 @@ def ws_live(
     if (runtime := _runtime(hass, connection, msg)) is None:
         return
     connection.send_result(msg["id"], runtime.capture.status.as_dict())
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_TYPE_DISCOVERY})
+@websocket_api.async_response
+async def ws_discovery(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """
+    Return discovery as the last pass stored it: suggestions and cold corners, a song each.
+
+    Database only - never a network request (see ``core/discovery.py``). ``suggested_state``
+    says whether Last.fm is set up (``unavailable``), not yet asked (``pending``) or ``ready``.
+    """
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    discovery = runtime.operations.discovery
+    assert discovery is not None
+    result = await discovery.read(lastfm_configured=runtime.settings.lastfm_configured)
+    connection.send_result(msg["id"], result.to_dict())
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_TYPE_DISCOVERY_REFRESH})
+@websocket_api.require_admin
+@callback
+def ws_discovery_refresh(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Start a discovery pass in the background; return the ``discovery`` job's state."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    if not runtime.async_request_discovery():
+        connection.send_error(msg["id"], ERR_ALREADY_RUNNING, "Discovery is already running")
+        return
+    connection.send_result(msg["id"], runtime.jobs.get(JOB_DISCOVERY))
+
+
+def _ma_speakers(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Music Assistant's media players, as the speaker menu lists them (enabled, by name)."""
+    registry = er.async_get(hass)
+    speakers = []
+    for entry in registry.entities.values():
+        if entry.platform != MA_DOMAIN or entry.domain != "media_player" or entry.disabled:
+            continue
+        state = hass.states.get(entry.entity_id)
+        name = (
+            state.attributes.get("friendly_name")
+            if state is not None
+            else entry.name or entry.original_name
+        ) or entry.entity_id
+        speakers.append(
+            {
+                "entity_id": entry.entity_id,
+                "name": name,
+                "available": state is not None and state.state != "unavailable",
+            }
+        )
+    speakers.sort(key=lambda speaker: str(speaker["name"]).casefold())
+    return speakers
+
+
+@websocket_api.websocket_command({vol.Required("type"): WS_TYPE_PLAYERS})
+@websocket_api.async_response
+async def ws_players(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The speakers a discovery song can play on, and the one used last (the menu's default)."""
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    connection.send_result(
+        msg["id"],
+        {"players": _ma_speakers(hass), "last_used": await runtime.store.last_player()},
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_TYPE_PLAY,
+        vol.Required("entity_id"): str,
+        vol.Required("artist"): vol.All(str, vol.Length(min=1)),
+        vol.Required("song"): vol.All(str, vol.Length(min=1)),
+    }
+)
+@websocket_api.async_response
+async def ws_play(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """
+    Play ONE song on a Music Assistant speaker, replacing what is queued there.
+
+    Bob, 2026-09-25: a click plays just that song, on the speaker picked from the menu. Goes
+    through Home Assistant's own ``music_assistant.play_media`` action, with the calling user's
+    context (so it is logged as theirs and their permissions apply): Music Assistant searches
+    its providers for "song" by "artist". The queue is replaced and radio mode is off, so
+    nothing is added after it - unless the speaker's own "don't stop the music" setting is on
+    in Music Assistant, which this does not change. When Music Assistant cannot find the song,
+    the error comes back as ``play_failed`` with its message, for the panel to show.
+    """
+    if (runtime := _runtime(hass, connection, msg)) is None:
+        return
+    entity_id = msg["entity_id"]
+    if entity_id not in {speaker["entity_id"] for speaker in _ma_speakers(hass)}:
+        connection.send_error(
+            msg["id"], ERR_NOT_A_SPEAKER, f"{entity_id} is not a Music Assistant speaker"
+        )
+        return
+    try:
+        await hass.services.async_call(
+            MA_DOMAIN,
+            MA_SERVICE_PLAY_MEDIA,
+            {
+                "entity_id": entity_id,
+                "media_id": msg["song"],
+                "media_type": "track",
+                "artist": msg["artist"],
+                "enqueue": "replace",
+                "radio_mode": False,
+            },
+            blocking=True,
+            context=connection.context(msg),
+        )
+    except HomeAssistantError as err:
+        connection.send_error(msg["id"], ERR_PLAY_FAILED, str(err))
+        return
+    await runtime.store.set_last_player(entity_id)
+    connection.send_result(msg["id"], {"playing": msg["song"], "on": entity_id})

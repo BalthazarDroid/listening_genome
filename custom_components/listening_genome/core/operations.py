@@ -36,9 +36,11 @@ from .constants import (
     RESOLVE_STATE_OK,
     RESOLVE_STATE_PENDING,
 )
+from .discovery import DiscoveryRunner
 from .http import describe_http_error
 from .jobs import (
     JOB_APPLE_IMPORT,
+    JOB_DISCOVERY,
     JOB_DUPLICATES,
     JOB_ENRICHMENT,
     JOB_LASTFM_IMPORT,
@@ -48,6 +50,7 @@ from .jobs import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from .discovery import DiscoveryReport, LibrarySource
     from .http import HttpClient
     from .jobs import JobTracker
     from .live import CapturedListen
@@ -152,6 +155,12 @@ class GenomeOperations:
         # through the same history twice
         self._lastfm_lock = asyncio.Lock()
         self._apple_lock = asyncio.Lock()
+        self._discovery_lock = asyncio.Lock()
+        self.discovery = (
+            DiscoveryRunner(self.store, lastfm_client=lastfm_client)
+            if lastfm_client is not None
+            else None
+        )
 
     @property
     def enrichment_running(self) -> bool:
@@ -340,6 +349,40 @@ class GenomeOperations:
                 LISTENER_HOUSEHOLD, since=min(played), until=max(played), added_after_id=added_after
             )
         return added
+
+    @property
+    def discovery_running(self) -> bool:
+        """Return whether a discovery pass is in progress."""
+        return self._discovery_lock.locked()
+
+    async def discover(
+        self, library: LibrarySource | None, lastfm_api_key: str | None
+    ) -> DiscoveryReport | None:
+        """
+        Run one discovery pass, recorded as the ``discovery`` job; ``None`` if one is running.
+
+        Never raises for a network problem (a failing Last.fm seed or library read is part of
+        the report); an unexpected error is recorded on the job and re-raised.
+        """
+        if self.discovery is None:
+            msg = "No Last.fm client configured"
+            raise RuntimeError(msg)
+        if self._discovery_lock.locked():
+            return None
+        async with self._discovery_lock:
+            await self.jobs.start(JOB_DISCOVERY, "Looking for music to discover...")
+            try:
+                genome = await self.service.get_cached(LISTENER_HOUSEHOLD)
+                report = await self.discovery.run(genome, library, lastfm_api_key)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                await self.jobs.fail(JOB_DISCOVERY, f"Discovery failed: {err}")
+                raise
+            summary = report.summary()
+            await self.jobs.finish(JOB_DISCOVERY, f"Discovery finished: {summary}")
+            LOGGER.info("Discovery finished: %s", summary)
+            return report
 
     async def _already_captured(self, listen: Listen) -> bool:
         """

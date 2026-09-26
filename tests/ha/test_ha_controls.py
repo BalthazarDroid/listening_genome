@@ -168,6 +168,7 @@ async def test_ws_jobs(
         "lastfm_import",
         "apple_import",
         "duplicates",
+        "discovery",
     }
     # setup rebuilt (no cache yet), and that is recorded
     assert msg["result"]["rebuild"]["state"] == "ok"

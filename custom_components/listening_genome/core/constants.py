@@ -236,7 +236,7 @@ GENOME_DISCOVERY_TASK_ID: Final[str] = "genome_discovery"
 # Bumped whenever the stored discovery blob's shape changes. Deliberately separate from
 # GENOME_RESULT_SCHEMA_VERSION: discovery lives in its own cache row, so the (far more
 # expensive) genome result is not discarded because a discovery field moved.
-GENOME_DISCOVERY_CACHE_VERSION: Final[int] = 1
+GENOME_DISCOVERY_CACHE_VERSION: Final[int] = 2  # 2: cold corners stored too; a song each
 
 # An artist in the library counts as a "cold corner" when the household has played them at
 # most this many times. Zero would surface only never-touched imports and would miss the more
@@ -269,6 +269,11 @@ GENOME_DISCOVERY_LASTFM_MIN_INTERVAL_SECONDS: Final[float] = 1.0
 GENOME_DISCOVERY_SEED_ERROR_COOLDOWN_HOURS: Final[int] = 6
 
 LASTFM_SIMILAR_METHOD: Final[str] = "artist.getSimilar"
+LASTFM_TOP_TRACKS_METHOD: Final[str] = "artist.getTopTracks"
+# how many of an artist's top tracks to consider when choosing the one song to suggest
+GENOME_DISCOVERY_TOP_TRACKS: Final[int] = 10
+# a song the household has played this often is not a discovery any more: the next one is picked
+GENOME_DISCOVERY_SONG_MAX_PLAYS: Final[int] = 2
 
 # `suggested_state` values on the `genome/discovery` result (see models.DiscoveryResult).
 DISCOVERY_STATE_READY: Final[str] = "ready"
